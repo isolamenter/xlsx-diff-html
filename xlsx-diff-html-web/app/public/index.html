@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>xlsx-diff-html</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <h1>xlsx-diff-html</h1>
+        <div id="rootPath" class="root-path">Loading root...</div>
+      </div>
+      <div class="topbar-actions">
+        <label class="language-select">
+          <span data-i18n="language">Language</span>
+          <select id="language">
+            <option value="en">English</option>
+            <option value="zh">中文</option>
+          </select>
+        </label>
+        <div id="runtimeInfo" class="runtime"></div>
+      </div>
+    </header>
+
+    <main class="shell">
+      <section class="sidebar panel">
+        <div class="panel-head">
+          <div>
+            <h2 data-i18n="files">Files</h2>
+            <div id="currentPath" class="muted">.</div>
+          </div>
+          <button id="refreshTree" type="button" data-i18n="refresh">Refresh</button>
+        </div>
+        <div class="path-actions">
+          <button id="upDir" type="button" data-i18n="up">Up</button>
+          <button id="useCurrentRepo" type="button" disabled data-i18n="useRepo">Use Repo</button>
+        </div>
+        <div id="tree" class="tree"></div>
+      </section>
+
+      <section class="workspace">
+        <section class="panel controls">
+          <div class="control-row">
+            <label>
+              <span data-i18n="repo">Repo</span>
+              <input id="repoPath" type="text" readonly placeholder="Select a repo directory" data-i18n-placeholder="selectRepo">
+            </label>
+            <label>
+              <span data-i18n="mode">Mode</span>
+              <select id="repoMode">
+                <option value="working" data-i18n="modeWorking">HEAD vs working tree</option>
+                <option value="staged" data-i18n="modeStaged">HEAD vs staged index</option>
+              </select>
+            </label>
+            <button id="loadStatus" type="button" data-i18n="load">Load</button>
+          </div>
+          <div class="control-row compact">
+            <label class="inline">
+              <input id="allSheets" type="checkbox">
+              <span data-i18n="allSheets">All sheets</span>
+            </label>
+            <label>
+              <span data-i18n="sheet">Sheet</span>
+              <input id="sheet" type="number" min="1" value="1">
+            </label>
+            <label class="inline">
+              <input id="ignoreEmpty" type="checkbox">
+              <span data-i18n="ignoreEmpty">Ignore empty rows</span>
+            </label>
+            <label>
+              <span data-i18n="dateFormat">Date format</span>
+              <input id="dateFormat" type="text" value="yyyy-mm-dd" placeholder="yyyy-mm-dd">
+            </label>
+          </div>
+        </section>
+
+        <section class="panel split">
+          <div>
+            <div class="panel-head">
+              <div>
+                <h2 data-i18n="changedXlsx">Changed xlsx</h2>
+                <div id="statusMeta" class="muted">No repo selected</div>
+              </div>
+            </div>
+            <div id="changedFiles" class="list empty">Select a repo, then load changed files.</div>
+          </div>
+
+          <div>
+            <div class="panel-head">
+              <div>
+                <h2 data-i18n="compareFiles">Compare files</h2>
+                <div class="muted" data-i18n="rootContained">Use root-contained xlsx files.</div>
+              </div>
+              <button id="runFileDiff" type="button" data-i18n="compare">Compare</button>
+            </div>
+            <div class="file-pair">
+              <label>
+                <span data-i18n="old">Old</span>
+                <input id="oldFile" type="text" readonly placeholder="Pick old file" data-i18n-placeholder="pickOldFile">
+              </label>
+              <label>
+                <span data-i18n="new">New</span>
+                <input id="newFile" type="text" readonly placeholder="Pick new file" data-i18n-placeholder="pickNewFile">
+              </label>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel result-panel">
+          <div class="panel-head">
+            <div>
+              <h2 data-i18n="diff">Diff</h2>
+              <div id="diffMeta" class="muted">No diff generated</div>
+            </div>
+            <a id="openDiff" class="button-link disabled" href="#" target="_blank" rel="noreferrer" data-i18n="open">Open</a>
+          </div>
+          <div id="message" class="message" hidden></div>
+          <iframe id="diffFrame" title="xlsx diff output"></iframe>
+        </section>
+      </section>
+    </main>
+
+    <script src="/app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,16 @@
+{
+  "name": "xlsx-diff-html",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Build a macOS DMG for browsing Git xlsx diffs as HTML.",
+  "scripts": {
+    "build:dmg": "./scripts/build-dmg.sh"
+  },
+  "dependencies": {
+    "daff": "1.4.2",
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
