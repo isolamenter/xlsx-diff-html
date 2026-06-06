@@ -9,45 +9,33 @@
 
 数据流：`xlsx → xlsx2csv → CSV → daff → HTML`
 
-- **CLI** — `./xlsx-diff-html`（根目录，bash 脚本，是真正的引擎）。比较 Git 仓库里改动的 `.xlsx`，对每个文件生成 `*.diff.html`。
+- **CLI** — `xlsx-diff-html.mjs`（根目录，Node ES 模块）。比较 Git 仓库里改动的 `.xlsx`，对每个文件生成 `*.diff.html`。
+- **lib/** — 核心模块：`engine.mjs`（runDiff、xlsxBufferToCsv）、`daff.mjs`（csvDiffToHtml）、`git.mjs`（spawnGit、parseGitStatus）。
 - **Web UI** — `xlsx-diff-html-web/app/`
-  - `server.mjs` — 仅监听 `127.0.0.1` 的 Node HTTP 服务，启动时随机生成 `token`，所有 `/api/*` 与 `/diff/*` 请求都要带 token。
+  - `server.mjs` — 仅监听 `127.0.0.1` 的 Node HTTP 服务，启动时随机生成 `token`，所有 `/api/*` 与 `/diff/*` 请求都要带 token。直接 import `lib/` 模块，无子进程依赖（git 除外）。
   - `public/` — 前端 `index.html` / `app.js` / `styles.css`（中英双语）。
-  - `bin/xlsx-diff-html` — **薄壳**，只是 `exec` 到根目录的 CLI 引擎（不要在这里加逻辑）。
-  - `vendor/xlsx2csv-node.mjs` — 基于 SheetJS(`xlsx`) 的 `xlsx2csv` 实现，输出 Excel 显示文本（`--raw` 才输出原始值）。
-  - `vendor/bin/{xlsx2csv,daff}` — 包装脚本，优先用内嵌 node，dev 下回退到系统 node / 环境变量。
-
-CLI 与 web shim 的 `bin/xlsx-diff-html` **不是同一个文件**：根目录那个是完整引擎，web 下那个只是转发。改 diff 行为请改根目录的 `./xlsx-diff-html`。
 
 ## 依赖
 
 - Node ≥ 20（已在 v20.19.6 验证）
-- npm 依赖：`daff@1.4.2`、`xlsx`(SheetJS，从 CDN tarball 装)，`npm install` 后在 `node_modules/.bin/` 下有 `daff`。
-- 没有单独的全局 `xlsx2csv`，它就是 `vendor/xlsx2csv-node.mjs`（导入 `xlsx`）。
+- npm 依赖：`daff@1.4.2`、`xlsx`(SheetJS，从 CDN tarball 装)，`npm install` 后在 `node_modules/` 下可用。
 
 ## 本地运行（dev，已验证）
 
-CLI（根 CLI 需要 PATH 里有 `daff`，并通过 `XLSX2CSV` 指向转换器）：
+CLI：
 
 ```bash
 npm install
-XLSX2CSV="$PWD/xlsx-diff-html-web/app/vendor/bin/xlsx2csv" \
-PATH="$PWD/node_modules/.bin:$PATH" \
-./xlsx-diff-html --changed            # 比较 git status 报告的所有改动 .xlsx
-# 也可： ./xlsx-diff-html [options] FILE.xlsx [FILE2.xlsx ...]
+node xlsx-diff-html.mjs --changed   # 比较 git status 报告的所有改动 .xlsx
+# 也可：node xlsx-diff-html.mjs [options] FILE.xlsx [FILE2.xlsx ...]
 ```
 
-Web 服务（dev 下没有内嵌 node/daff，需用环境变量回退）：
+Web 服务：
 
 ```bash
-XLSX_DIFF_HTML_DEV_DAFF="$PWD/node_modules/.bin/daff" \
-XLSX_DIFF_HTML_ROOT="$PWD" \
-node xlsx-diff-html-web/app/server.mjs
+XLSX_DIFF_HTML_ROOT="$PWD" node xlsx-diff-html-web/app/server.mjs
 # 打印形如 http://127.0.0.1:<port>/?token=<token> 的地址
 ```
-
-- `server.mjs` 经 `bin/xlsx-diff-html` shim 调到根 CLI；`xlsx2csv-node.mjs` 通过 Node 模块解析向上找到根 `node_modules/xlsx`，所以 dev 下无需内嵌 vendor。
-- `vendor/bin/daff` 在 dev 没有内嵌 node 时不会自动回退到 `node_modules`，必须设 `XLSX_DIFF_HTML_DEV_DAFF`。
 
 ## CLI 关键行为
 
@@ -65,8 +53,8 @@ node xlsx-diff-html-web/app/server.mjs
 - `GET /api/root` — 根路径与平台信息
 - `GET /api/list?path=` — 列目录（`.xlsx` 文件 + 子目录，标记 `hasGit`）
 - `GET /api/repo/status?repo=&mode=working|staged` — 仓库里改动的 `.xlsx`
-- `POST /api/diff/git` — 对仓库内某文件做 HEAD vs 工作区/暂存区 diff（内部调根 CLI）
-- `POST /api/diff/files` — 任意两个 `.xlsx` 文件对比（直接调 `xlsx2csv` + `daff`）
+- `POST /api/diff/git` — 对仓库内某文件做 HEAD vs 工作区/暂存区 diff（直接调 `lib/engine.mjs:runDiff`）
+- `POST /api/diff/files` — 任意两个 `.xlsx` 文件对比（直接调 `xlsxBufferToCsv` + `csvDiffToHtml`）
 - `GET /diff/<id>` — 取生成的 HTML
 
 安全约束：所有路径都限制在 `XLSX_DIFF_HTML_ROOT` 内（`isInside` + `realpath` 双重校验，拒绝 `..`、绝对路径、符号链接逃逸）；只接受 `.xlsx`。改路径处理时务必保持这些校验。
@@ -74,5 +62,5 @@ node xlsx-diff-html-web/app/server.mjs
 ## 约定
 
 - 回答用中文或英文。
-- 改动 diff 逻辑 → 根 `./xlsx-diff-html`；改 UI/HTTP → `xlsx-diff-html-web/app/`。两个 `*.diff` 行为应保持一致（CLI 与 web 选项映射见 `server.mjs` 的 `diffArgsFromOptions` / `convertXlsx`）。
+- 改动 diff 逻辑 → `lib/engine.mjs`；改 UI/HTTP → `xlsx-diff-html-web/app/server.mjs`。两个 `*.diff` 行为应保持一致（CLI 与 web 均调同一 `runDiff`）。
 - 暂不要碰 DMG/`.app`/签名相关代码。

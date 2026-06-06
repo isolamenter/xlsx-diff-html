@@ -6,14 +6,13 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { runDiff, xlsxBufferToCsv } from '../../lib/engine.mjs';
+import { csvDiffToHtml } from '../../lib/daff.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const APP_DIR = path.dirname(__filename);
 const PACKAGE_ROOT = path.resolve(APP_DIR, '..');
 const PUBLIC_DIR = path.join(APP_DIR, 'public');
-const VENDOR_BIN = path.join(APP_DIR, 'vendor', 'bin');
-const VENDOR_NODE_BIN = path.join(APP_DIR, 'vendor', 'node', 'bin');
-const ENGINE = path.join(APP_DIR, 'bin', 'xlsx-diff-html');
 const TOKEN = process.env.XLSX_DIFF_HTML_TOKEN || crypto.randomBytes(24).toString('hex');
 const READY_FILE = process.env.XLSX_DIFF_HTML_READY_FILE || '';
 const ROOT_INPUT = process.env.XLSX_DIFF_HTML_ROOT || PACKAGE_ROOT;
@@ -21,15 +20,7 @@ const ROOT_REAL = await fsp.realpath(ROOT_INPUT);
 const SESSION_TMP = await fsp.mkdtemp(path.join(os.tmpdir(), 'xlsx-diff-html-web-'));
 const diffs = new Map();
 
-const BASE_PATH = [
-  VENDOR_BIN,
-  VENDOR_NODE_BIN,
-  '/usr/bin',
-  '/bin',
-  '/usr/sbin',
-  '/sbin',
-  process.env.PATH || '',
-].filter(Boolean).join(':');
+const BASE_PATH = process.env.PATH || '';
 
 function isInside(parent, child) {
   const relative = path.relative(parent, child);
@@ -129,11 +120,7 @@ function relFromRoot(absPath) {
 }
 
 function toolEnv() {
-  return {
-    ...process.env,
-    PATH: BASE_PATH,
-    XLSX2CSV: path.join(VENDOR_BIN, 'xlsx2csv'),
-  };
+  return { ...process.env, PATH: BASE_PATH };
 }
 
 function httpError(statusCode, message, extra = {}) {
@@ -388,29 +375,21 @@ async function diffGit(req) {
   const file = await validateRepoFile(repoReal, body.file || '');
   const options = readDiffOptions(body);
   const htmlPath = path.join(SESSION_TMP, `${crypto.randomBytes(12).toString('hex')}.html`);
-  const args = diffArgsFromOptions(options);
-  if (mode === 'staged') args.push('--staged');
-  args.push('--output', htmlPath, file);
 
-  const result = await runCommand(ENGINE, args, {
-    cwd: repoReal,
-    env: toolEnv(),
-    timeoutMs: 300000,
-  });
-
-  const htmlExists = await fileExists(htmlPath);
-  if (result.code !== 0 || !htmlExists) {
-    throw commandHttpError(500, 'xlsx diff failed', result);
+  let result;
+  try {
+    result = await runDiff({ repoRoot: repoReal, file, mode, options, htmlPath });
+  } catch (err) {
+    throw httpError(500, `xlsx diff failed: ${err.message}`);
   }
 
-  const stdout = result.stdout.toString('utf8');
   const id = createDiffRecord(htmlPath);
   return {
     id,
     htmlUrl: `/diff/${id}?token=${TOKEN}`,
-    noTableDiff: stdout.includes('Diff: no table diff'),
-    stdout,
-    stderr: result.stderr.toString('utf8'),
+    noTableDiff: result.noTableDiff,
+    stdout: result.stdout,
+    stderr: result.stderr,
   };
 }
 
@@ -429,28 +408,20 @@ async function diffFiles(req) {
   }
 
   const options = readDiffOptions(body);
-  const idBase = crypto.randomBytes(12).toString('hex');
-  const oldCsv = path.join(SESSION_TMP, `${idBase}.old.csv`);
-  const newCsv = path.join(SESSION_TMP, `${idBase}.new.csv`);
-  const htmlPath = path.join(SESSION_TMP, `${idBase}.html`);
+  const htmlPath = path.join(SESSION_TMP, `${crypto.randomBytes(12).toString('hex')}.html`);
 
-  const oldConvert = await convertXlsx(oldFile, oldCsv, options);
-  if (oldConvert.code !== 0) throw commandHttpError(500, 'xlsx2csv failed for oldFile', oldConvert);
-  const newConvert = await convertXlsx(newFile, newCsv, options);
-  if (newConvert.code !== 0) throw commandHttpError(500, 'xlsx2csv failed for newFile', newConvert);
-
-  const [oldCsvData, newCsvData] = await Promise.all([fsp.readFile(oldCsv), fsp.readFile(newCsv)]);
-  const noTableDiff = oldCsvData.equals(newCsvData);
-  const daffResult = await runCommand(path.join(VENDOR_BIN, 'daff'), ['--output', htmlPath, oldCsv, newCsv], {
-    cwd: ROOT_REAL,
-    env: toolEnv(),
-    timeoutMs: 300000,
-  });
-
-  const htmlExists = await fileExists(htmlPath);
-  if (daffResult.code !== 0 && !htmlExists) {
-    throw commandHttpError(500, 'daff failed', daffResult);
+  const [oldBuffer, newBuffer] = await Promise.all([fsp.readFile(oldFile), fsp.readFile(newFile)]);
+  let oldCsv, newCsv;
+  try {
+    oldCsv = xlsxBufferToCsv(oldBuffer, options);
+    newCsv = xlsxBufferToCsv(newBuffer, options);
+  } catch (err) {
+    throw httpError(500, `xlsx2csv failed: ${err.message}`);
   }
+
+  const noTableDiff = oldCsv === newCsv;
+  const html = csvDiffToHtml(oldCsv, newCsv);
+  await fsp.writeFile(htmlPath, html);
 
   const id = createDiffRecord(htmlPath);
   const stdout = [
@@ -459,37 +430,7 @@ async function diffFiles(req) {
     noTableDiff ? 'Diff: no table diff' : '',
   ].filter(Boolean).join('\n');
 
-  return {
-    id,
-    htmlUrl: `/diff/${id}?token=${TOKEN}`,
-    noTableDiff,
-    stdout,
-    stderr: [
-      oldConvert.stderr.toString('utf8'),
-      newConvert.stderr.toString('utf8'),
-      daffResult.stderr.toString('utf8'),
-    ].filter(Boolean).join('\n'),
-  };
-}
-
-function convertXlsx(xlsx, csv, options) {
-  const args = ['--include-hidden-rows'];
-  if (options.sheetMode === 'all') {
-    args.push('-a', '-p', '');
-  } else {
-    args.push('-s', String(options.sheet));
-  }
-  if (options.ignoreEmpty) args.push('-i');
-  if (options.dateFormat) args.push('-f', options.dateFormat);
-  args.push(xlsx);
-  return runCommand(path.join(VENDOR_BIN, 'xlsx2csv'), args, {
-    cwd: ROOT_REAL,
-    env: toolEnv(),
-    timeoutMs: 300000,
-  }).then(async (result) => {
-    if (result.code === 0) await fsp.writeFile(csv, result.stdout);
-    return result;
-  });
+  return { id, htmlUrl: `/diff/${id}?token=${TOKEN}`, noTableDiff, stdout, stderr: '' };
 }
 
 async function fileExists(file) {

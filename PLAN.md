@@ -49,7 +49,7 @@
 
 ---
 
-## 阶段 1 — 把引擎逻辑拆成可导入的 Node 模块
+## 阶段 1 — 把引擎逻辑拆成可导入的 Node 模块 ✅ 已完成
 
 目标:消灭 bash,核心逻辑变成既能 CLI 调用、又能被 `server.mjs` 直接 import 的模块。
 
@@ -83,23 +83,24 @@
 
 ---
 
-## 阶段 2 — 让 server.mjs 跨平台并直连模块
+## 阶段 2 — 让 server.mjs 跨平台并直连模块 ✅ 已完成
 
 改 `server.mjs`(不动前端):
 
-1. `BASE_PATH`:删硬编码 `/usr/bin` 等与 `:`;改用 `path.delimiter`,只为「找到 `git`」保留系统 PATH。
-2. `toolEnv()` / `ENGINE`:不再指向 bash shim。
-   - `/api/diff/git`:`import { runDiff }` 直接调用,省掉一次子进程。
-   - `/api/diff/files`:`import { xlsxToCsv, csvDiffToHtml }` 直接调用,去掉 spawn。
-3. 删除 `vendor/bin/{daff,xlsx2csv}` 两个 bash shim 与 `XLSX2CSV` 环境约定(同步更新 CLAUDE.md)。
-4. 复核 Windows 路径安全:`isInside`、`assertRelativePath`(已拒 `\`,Win 上确认不误伤盘符)、
-   `realpath`(大小写不敏感卷)。**安全关键,Win 上必须单测。**
+1. ✅ `BASE_PATH`:改为 `process.env.PATH`，删除 `/usr/bin` 等 Unix 硬编码路径与 `:` 分隔符。
+2. ✅ `toolEnv()` / `ENGINE`:不再指向 bash shim，删除 `XLSX2CSV` 环境变量。
+   - ✅ `/api/diff/git`:`import { runDiff }` 直接调用，省掉子进程。
+   - ✅ `/api/diff/files`:`import { xlsxBufferToCsv, csvDiffToHtml }` 直接调用，省掉子进程与临时 CSV 文件。
+3. ✅ 删除 `vendor/bin/{daff,xlsx2csv}` 两个 bash shim 与 `XLSX2CSV` 环境约定（同步更新 CLAUDE.md）。
+4. ⏳ Windows 路径安全复核(`isInside`、`assertRelativePath`、`realpath`)留待 Windows 平台单测。
 
-**Windows 增量:** 上述 1、4。mac/Linux 下这步基本是「删代码 + 改 import」。
+**实际偏差:** `lib/xlsx2csv.mjs` 未单独提取；`xlsxBufferToCsv` 直接从 `lib/engine.mjs` 导出，功能等价。
+
+**Windows 增量:** 上述 4。mac/Linux 下已完成。
 
 ---
 
-## 阶段 3 — Tauri v2 套壳
+## 阶段 3 — Tauri v2 套壳 ✅ 已完成
 
 新建 `xlsx-diff-html-tauri/`(独立于现有 web 目录):
 
@@ -108,9 +109,13 @@
      `XLSX_DIFF_HTML_READY_FILE`、`XLSX_DIFF_HTML_ROOT`。
    - 读 ready 文件拿到 URL(含 token),`WebviewWindow` 加载。
    - 生命周期:窗口关闭/退出 → 给 sidecar 发 SIGTERM;`tauri-plugin-single-instance` 防多开。
-   - 兜底:sidecar 起不来时显示错误页。
+   - 兜底:sidecar 起不来时报错退出。
 2. 前端零改动——直接加载 localhost,不用 Tauri IPC(避免 CSP/remote-IPC 复杂度)。
 3. 安全维持现状:仍是 `127.0.0.1` + token。
+
+**实际偏差:** setup() 同步等待 ready file（而非异步），避免 macOS 无初始窗口自动退出的问题。
+`node_binary()` 自动探测 nvm 路径，解决 GUI 启动时 PATH 不含 nvm 的问题。
+当前 `cargo tauri dev` 跑通 macOS dev-mode，Node 使用系统安装版本（Phase 4 内嵌）。
 
 **Windows 增量:** WebView2 runtime(Win10/11 多自带,Tauri 可 bootstrap);
 关窗确实杀掉 node 的进程树行为要确认。
