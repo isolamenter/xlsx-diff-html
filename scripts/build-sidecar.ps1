@@ -20,7 +20,7 @@ npx esbuild xlsx-diff-html-web/app/server.mjs `
 
 # 2. Create Node SEA config
 '{"main":"dist/server-bundle.cjs","output":"dist/sea-prep.blob","disableExperimentalSEAWarning":true}' |
-  Set-Content dist/sea-config.json -Encoding utf8
+  Set-Content dist/sea-config.json -Encoding Ascii
 
 # 3. Generate the blob
 Write-Host "==> Generating SEA blob..."
@@ -29,7 +29,24 @@ node --experimental-sea-config dist/sea-config.json
 # 4. Copy node.exe and inject the blob
 # No --macho-segment-name on Windows (that flag is macOS-only)
 Write-Host "==> Injecting blob into node.exe copy..."
-$NodeExe = (Get-Command node).Source
+$NodeExe = (Get-Command node.exe -ErrorAction SilentlyContinue).Source
+if (-not $NodeExe) {
+  $NodeExe = (Get-Command node).Source
+}
+if ($NodeExe -like "*.cmd" -or $NodeExe -like "*.bat") {
+  $NodeDir = Split-Path $NodeExe
+  if (Test-Path "$NodeDir\node.exe") {
+    $NodeExe = "$NodeDir\node.exe"
+  } else {
+    $Paths = $env:PATH -split ';'
+    foreach ($p in $Paths) {
+      if (Test-Path "$p\node.exe") {
+        $NodeExe = "$p\node.exe"
+        break
+      }
+    }
+  }
+}
 Copy-Item $NodeExe dist\server-sea.exe -Force
 npx postject dist\server-sea.exe NODE_SEA_BLOB dist\sea-prep.blob `
   --sentinel-fuse NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2

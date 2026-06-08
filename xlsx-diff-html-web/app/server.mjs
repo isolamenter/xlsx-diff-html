@@ -52,11 +52,12 @@ function isXlsxPath(value) {
 }
 
 function assertRelativePath(value, label) {
-  const rel = value || '';
+  let rel = value || '';
   if (typeof rel !== 'string') {
     throw httpError(400, `${label} must be a string`);
   }
-  if (rel.includes('\0') || rel.includes('\\') || path.isAbsolute(rel)) {
+  rel = rel.replace(/\\/g, '/');
+  if (rel.includes('\0') || path.isAbsolute(rel)) {
     throw httpError(400, `${label} must be a safe relative path`);
   }
   const parts = rel.split('/').filter(Boolean);

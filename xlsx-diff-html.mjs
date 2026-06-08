@@ -47,7 +47,10 @@ function warn(msg) {
 function openBrowser(htmlPath) {
   let cmd;
   if (process.platform === 'darwin') cmd = `open ${JSON.stringify(htmlPath)}`;
-  else if (process.platform === 'win32') cmd = `start "" ${JSON.stringify(htmlPath)}`;
+  else if (process.platform === 'win32') {
+    const safePath = htmlPath.replace(/\\/g, '/');
+    cmd = `start "" "${safePath}"`;
+  }
   else cmd = `xdg-open ${JSON.stringify(htmlPath)}`;
   exec(cmd, (err) => {
     if (err) warn(`failed to open browser for ${htmlPath}`);
