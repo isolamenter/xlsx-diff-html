@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawn, exec } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
@@ -158,6 +158,17 @@ function commandHttpError(statusCode, message, result) {
   });
 }
 
+function stripLongPathPrefix(p) {
+  if (typeof p !== 'string') return p;
+  if (p.startsWith('\\\\?\\UNC\\')) {
+    return '\\\\' + p.slice(8);
+  }
+  if (p.startsWith('\\\\?\\')) {
+    return p.slice(4);
+  }
+  return p;
+}
+
 function runCommand(command, args, options = {}) {
   const {
     cwd = ROOT_REAL,
@@ -168,7 +179,7 @@ function runCommand(command, args, options = {}) {
 
   return new Promise((resolve) => {
     const child = spawn(command, args, {
-      cwd,
+      cwd: stripLongPathPrefix(cwd),
       env,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -586,15 +597,17 @@ async function route(req, res) {
       if (parsed.hostname !== '127.0.0.1' && parsed.hostname !== 'localhost') {
         throw httpError(400, 'only localhost URLs allowed');
       }
-      let command, args;
-      if (process.platform === 'darwin') {
-        command = 'open'; args = [target];
-      } else if (process.platform === 'win32') {
-        command = 'cmd'; args = ['/c', 'start', '', target];
+      if (process.platform === 'win32') {
+        exec(`start "" ${JSON.stringify(target)}`).unref();
       } else {
-        command = 'xdg-open'; args = [target];
+        let command, args;
+        if (process.platform === 'darwin') {
+          command = 'open'; args = [target];
+        } else {
+          command = 'xdg-open'; args = [target];
+        }
+        spawn(command, args, { detached: true, stdio: 'ignore' }).unref();
       }
-      spawn(command, args, { detached: true, stdio: 'ignore' }).unref();
       return json(res, 200, {});
     }
     if (req.method === 'POST' && url.pathname === '/api/open-folder-dialog') {
