@@ -356,7 +356,7 @@ function showDiff(result, label) {
   setMessage(result.noTableDiff ? t('noTableDiff') : '');
   el.diffMeta.textContent = label;
   el.diffFrame.src = result.htmlUrl;
-  el.openDiff.href = result.htmlUrl;
+  el.openDiff.href = result.sbsUrl || result.htmlUrl;
   el.openDiff.classList.remove('disabled');
 }
 

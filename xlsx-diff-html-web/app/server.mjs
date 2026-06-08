@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runDiff, xlsxBufferToCsv } from '../../lib/engine.mjs';
-import { csvDiffToHtml } from '../../lib/daff.mjs';
+import { csvDiffToHtml, csvDiffToHtmlSideBySide } from '../../lib/daff.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const APP_DIR = path.dirname(__filename);
@@ -16,9 +16,10 @@ const PUBLIC_DIR = process.env.XLSX_PUBLIC_DIR || path.join(APP_DIR, 'public');
 const TOKEN = process.env.XLSX_DIFF_HTML_TOKEN || crypto.randomBytes(24).toString('hex');
 const READY_FILE = process.env.XLSX_DIFF_HTML_READY_FILE || '';
 const ROOT_INPUT = process.env.XLSX_DIFF_HTML_ROOT || PACKAGE_ROOT;
+const SESSION_FILE = path.join(os.homedir(), '.xlsx-diff-html-session.json');
 let ROOT_REAL;
 let SESSION_TMP;
-const diffs = new Map();
+const diffs = new Map(); // id → { htmlPath: string|null, sbsHtmlPath: string|null }
 
 const BASE_PATH = process.env.PATH || '';
 const SETTINGS_FILE = path.join(os.homedir(), '.xlsx-diff-html-settings.json');
@@ -401,9 +402,9 @@ function diffArgsFromOptions(options) {
   return args;
 }
 
-function createDiffRecord(htmlPath) {
+function createDiffRecord(htmlPath, sbsHtmlPath) {
   const id = crypto.randomBytes(16).toString('hex');
-  diffs.set(id, htmlPath);
+  diffs.set(id, { htmlPath, sbsHtmlPath });
   return id;
 }
 
@@ -413,19 +414,22 @@ async function diffGit(req) {
   const repoReal = await validateRepoRoot(body.repo || '');
   const file = await validateRepoFile(repoReal, body.file || '');
   const options = readDiffOptions(body);
-  const htmlPath = path.join(SESSION_TMP, `${crypto.randomBytes(12).toString('hex')}.html`);
+  const prefix = crypto.randomBytes(12).toString('hex');
+  const htmlPath = path.join(SESSION_TMP, `${prefix}.html`);
+  const sbsHtmlPath = path.join(SESSION_TMP, `${prefix}.sbs.html`);
 
   let result;
   try {
-    result = await runDiff({ repoRoot: repoReal, file, mode, options, htmlPath });
+    result = await runDiff({ repoRoot: repoReal, file, mode, options, htmlPath, sbsHtmlPath });
   } catch (err) {
     throw httpError(500, `xlsx diff failed: ${err.message}`);
   }
 
-  const id = createDiffRecord(htmlPath);
+  const id = createDiffRecord(htmlPath, sbsHtmlPath);
   return {
     id,
     htmlUrl: `/diff/${id}?token=${TOKEN}`,
+    sbsUrl: `/diff/${id}/sbs?token=${TOKEN}`,
     noTableDiff: result.noTableDiff,
     stdout: result.stdout,
     stderr: result.stderr,
@@ -447,7 +451,9 @@ async function diffFiles(req) {
   }
 
   const options = readDiffOptions(body);
-  const htmlPath = path.join(SESSION_TMP, `${crypto.randomBytes(12).toString('hex')}.html`);
+  const prefix = crypto.randomBytes(12).toString('hex');
+  const htmlPath = path.join(SESSION_TMP, `${prefix}.html`);
+  const sbsHtmlPath = path.join(SESSION_TMP, `${prefix}.sbs.html`);
 
   const [oldBuffer, newBuffer] = await Promise.all([fsp.readFile(oldFile), fsp.readFile(newFile)]);
   let oldCsv, newCsv;
@@ -461,15 +467,52 @@ async function diffFiles(req) {
   const noTableDiff = oldCsv === newCsv;
   const html = csvDiffToHtml(oldCsv, newCsv);
   await fsp.writeFile(htmlPath, html);
+  await fsp.writeFile(sbsHtmlPath, csvDiffToHtmlSideBySide(oldCsv, newCsv));
 
-  const id = createDiffRecord(htmlPath);
+  const id = createDiffRecord(htmlPath, sbsHtmlPath);
   const stdout = [
     `Comparing: ${relFromRoot(oldFile)} -> ${relFromRoot(newFile)}`,
     options.sheetMode === 'all' ? 'Sheet: all' : `Sheet: ${options.sheet}`,
     noTableDiff ? 'Diff: no table diff' : '',
   ].filter(Boolean).join('\n');
 
-  return { id, htmlUrl: `/diff/${id}?token=${TOKEN}`, noTableDiff, stdout, stderr: '' };
+  return { id, htmlUrl: `/diff/${id}?token=${TOKEN}`, sbsUrl: `/diff/${id}/sbs?token=${TOKEN}`, noTableDiff, stdout, stderr: '' };
+}
+
+async function diffExternal(req) {
+  const body = await readJson(req);
+  const localPath = body.localPath;
+  const remotePath = body.remotePath;
+
+  // Accept any absolute paths (git provides temp files outside ROOT_REAL)
+  if (typeof localPath !== 'string' || !path.isAbsolute(localPath)) {
+    throw httpError(400, 'localPath must be an absolute path');
+  }
+  if (typeof remotePath !== 'string' || !path.isAbsolute(remotePath)) {
+    throw httpError(400, 'remotePath must be an absolute path');
+  }
+
+  const options = body.options && typeof body.options === 'object'
+    ? readDiffOptions(body.options)
+    : { sheetMode: 'all', sheet: 1, ignoreEmpty: false, dateFormat: 'yyyy-mm-dd' };
+
+  let oldBuffer, newBuffer;
+  try { oldBuffer = await fsp.readFile(localPath); } catch { oldBuffer = Buffer.alloc(0); }
+  try { newBuffer = await fsp.readFile(remotePath); } catch { newBuffer = Buffer.alloc(0); }
+
+  let oldCsv, newCsv;
+  try {
+    oldCsv = xlsxBufferToCsv(oldBuffer, options);
+    newCsv = xlsxBufferToCsv(newBuffer, options);
+  } catch (err) {
+    throw httpError(500, `xlsx2csv failed: ${err.message}`);
+  }
+
+  const sbsHtmlPath = path.join(SESSION_TMP, `${crypto.randomBytes(12).toString('hex')}.sbs.html`);
+  await fsp.writeFile(sbsHtmlPath, csvDiffToHtmlSideBySide(oldCsv, newCsv));
+
+  const id = createDiffRecord(null, sbsHtmlPath);
+  return { id, sbsUrl: `/diff/${id}/sbs?token=${TOKEN}`, noTableDiff: oldCsv === newCsv };
 }
 
 async function fileExists(file) {
@@ -483,9 +526,13 @@ async function fileExists(file) {
 
 async function serveDiff(req, res, url) {
   validateToken(req, url);
-  const id = url.pathname.slice('/diff/'.length);
-  const htmlPath = diffs.get(id);
-  if (!htmlPath) throw httpError(404, 'diff was not found');
+  const segment = url.pathname.slice('/diff/'.length); // "id" or "id/sbs"
+  const isSbs = segment.endsWith('/sbs');
+  const id = isSbs ? segment.slice(0, -4) : segment;
+  const record = diffs.get(id);
+  if (!record) throw httpError(404, 'diff was not found');
+  const htmlPath = isSbs ? record.sbsHtmlPath : record.htmlPath;
+  if (!htmlPath) throw httpError(404, 'diff view not available');
   await sendFile(res, htmlPath, 'text/html; charset=utf-8');
 }
 
@@ -595,6 +642,9 @@ async function route(req, res) {
     if (req.method === 'POST' && url.pathname === '/api/diff/files') {
       return json(res, 200, await diffFiles(req));
     }
+    if (req.method === 'POST' && url.pathname === '/api/diff/external') {
+      return json(res, 200, await diffExternal(req));
+    }
     if (req.method === 'GET' && url.pathname.startsWith('/diff/')) {
       return serveDiff(req, res, url);
     }
@@ -631,7 +681,7 @@ async function runStartupDiff(localPath, remotePath) {
   const html = csvDiffToHtml(oldCsv, newCsv);
   const htmlPath = path.join(SESSION_TMP, 'startup.html');
   await fsp.writeFile(htmlPath, html);
-  const id = createDiffRecord(htmlPath);
+  const id = createDiffRecord(htmlPath, null);
   return `/diff/${id}?token=${TOKEN}`;
 }
 
@@ -667,6 +717,15 @@ async function start() {
 
   const url = `http://127.0.0.1:${port}${startPath}`;
   if (READY_FILE) await fsp.writeFile(READY_FILE, url);
+
+  // Write session file so CLI can route external diffs through this server
+  const serverBase = `http://127.0.0.1:${port}`;
+  try {
+    await fsp.writeFile(SESSION_FILE, JSON.stringify({ url: serverBase, token: TOKEN, pid: process.pid }));
+  } catch {
+    // non-fatal: external diff fallback will handle this
+  }
+
   console.log(`xlsx-diff-html web server listening on ${url}`);
   console.log(`root: ${ROOT_REAL}`);
 }
@@ -674,6 +733,13 @@ async function start() {
 async function shutdown() {
   server.close();
   if (SESSION_TMP) await fsp.rm(SESSION_TMP, { recursive: true, force: true }).catch(() => {});
+  // Remove session file only if it belongs to this process
+  try {
+    const data = JSON.parse(await fsp.readFile(SESSION_FILE, 'utf8'));
+    if (data?.pid === process.pid) await fsp.unlink(SESSION_FILE);
+  } catch {
+    // non-fatal
+  }
 }
 
 process.on('SIGINT', () => shutdown().finally(() => process.exit(0)));

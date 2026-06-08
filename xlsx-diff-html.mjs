@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-import { runDiff, runDiffFiles, normalizeFilePath, collectChangedXlsx } from './lib/engine.mjs';
+import { runDiff, runDiffFiles, normalizeFilePath, collectChangedXlsx, xlsxBufferToCsv } from './lib/engine.mjs';
+import { csvDiffToHtmlSideBySide } from './lib/daff.mjs';
 import { spawnGit } from './lib/git.mjs';
 import fsp from 'node:fs/promises';
 import os from 'node:os';
@@ -51,6 +52,36 @@ function openBrowser(htmlPath) {
   exec(cmd, (err) => {
     if (err) warn(`failed to open browser for ${htmlPath}`);
   });
+}
+
+const SESSION_FILE = path.join(os.homedir(), '.xlsx-diff-html-session.json');
+
+async function tryRouteToServer(localAbs, remoteAbs) {
+  let session;
+  try {
+    session = JSON.parse(await fsp.readFile(SESSION_FILE, 'utf8'));
+  } catch {
+    return null;
+  }
+  if (!session?.url || !session?.token) return null;
+
+  const controller = new AbortController();
+  const tid = setTimeout(() => controller.abort(), 3000);
+  try {
+    const res = await fetch(`${session.url}/api/diff/external`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-xlsx-diff-token': session.token },
+      body: JSON.stringify({ localPath: localAbs, remotePath: remoteAbs }),
+      signal: controller.signal,
+    });
+    clearTimeout(tid);
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data.sbsUrl ? `${session.url}${data.sbsUrl}` : null;
+  } catch {
+    clearTimeout(tid);
+    return null;
+  }
 }
 
 // Parse argv
@@ -127,24 +158,50 @@ if (compareMode) {
   const localAbs = path.isAbsolute(localFile) ? localFile : path.join(invocationCwd, localFile);
   const remoteAbs = path.isAbsolute(remoteFile) ? remoteFile : path.join(invocationCwd, remoteFile);
 
-  let htmlPath;
+  // Try routing through a running server instance (opens SBS view in browser)
+  if (autoOpen) {
+    const serverUrl = await tryRouteToServer(localAbs, remoteAbs);
+    if (serverUrl) {
+      openBrowser(serverUrl);
+      process.exit(0);
+    }
+  }
+
+  // Fallback: generate side-by-side HTML locally
+  let sbsHtmlPath;
   if (outputPath) {
-    htmlPath = path.isAbsolute(outputPath) ? outputPath : path.join(invocationCwd, outputPath);
+    sbsHtmlPath = path.isAbsolute(outputPath) ? outputPath : path.join(invocationCwd, outputPath);
   } else {
     const stamp = String(Date.now());
-    htmlPath = path.join(os.tmpdir(), 'xlsx-diff-html', `compare_${stamp}.diff.html`);
+    sbsHtmlPath = path.join(os.tmpdir(), 'xlsx-diff-html', `compare_${stamp}.sbs.html`);
   }
 
-  let result;
-  try {
-    result = await runDiffFiles({ localPath: localAbs, remotePath: remoteAbs, options, htmlPath });
-  } catch (err) {
-    die(err.message);
+  let oldBuffer, newBuffer;
+  try { oldBuffer = await fsp.readFile(localAbs); } catch { oldBuffer = Buffer.alloc(0); }
+  try { newBuffer = await fsp.readFile(remoteAbs); } catch { newBuffer = Buffer.alloc(0); }
+
+  let oldCsv, newCsv;
+  try { oldCsv = xlsxBufferToCsv(oldBuffer, options); } catch (e) {
+    die(`cannot parse LOCAL as xlsx (${localAbs}): ${e.message}`);
+  }
+  try { newCsv = xlsxBufferToCsv(newBuffer, options); } catch (e) {
+    die(`cannot parse REMOTE as xlsx (${remoteAbs}): ${e.message}`);
   }
 
-  process.stdout.write(result.stdout + '\n');
-  if (result.stderr) process.stderr.write(result.stderr + '\n');
-  if (autoOpen) openBrowser(result.htmlPath);
+  const noTableDiff = oldCsv === newCsv;
+  const sbsHtml = csvDiffToHtmlSideBySide(oldCsv, newCsv);
+  await fsp.mkdir(path.dirname(sbsHtmlPath), { recursive: true });
+  await fsp.writeFile(sbsHtmlPath, sbsHtml);
+
+  const sheetLabel = options.sheetMode === 'all' ? 'all' : String(options.sheet ?? 1);
+  process.stdout.write([
+    `Comparing: ${localAbs}  vs  ${remoteAbs}`,
+    `Sheet: ${sheetLabel}`,
+    `HTML: ${sbsHtmlPath}`,
+    ...(noTableDiff ? ['Diff: no table diff'] : []),
+  ].join('\n') + '\n');
+
+  if (autoOpen) openBrowser(sbsHtmlPath);
   process.exit(0);
 }
 
