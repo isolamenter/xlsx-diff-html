@@ -24,30 +24,40 @@ XLSX_DIFF_HTML_ROOT="$PWD" node xlsx-diff-html-web/app/server.mjs
 # 输出形如 http://127.0.0.1:<port>/?token=<token> 的地址，用浏览器打开
 ```
 
-### Tauri 桌面 App（macOS，产出 .app / .dmg）
+### Tauri 桌面 App
+
+**macOS**（产出 `.app` / `.dmg`）
 
 依赖：Node ≥ 20、Rust stable、git
 
 ```bash
-# 1. 安装 Node 依赖（根目录）
 npm install
-
-# 2. 编译 Node SEA sidecar（esbuild 打包 + Node SEA 注入）
-npm run build:sidecar
-
-# 3. 构建 Tauri App
-cd xlsx-diff-html-tauri
-npm install
-npm run build
+npm run build:sidecar                    # 编译 Node SEA sidecar
+cd xlsx-diff-html-tauri && npm install && npm run build
 # 输出：src-tauri/target/release/bundle/macos/xlsx-diff-html.app
 #        src-tauri/target/release/bundle/dmg/xlsx-diff-html_*.dmg
 ```
 
-Dev 模式（sidecar 需先构建一次）：
+**Windows**（产出 `.exe` / `.msi` 安装包）
+
+依赖：Node ≥ 20、Rust stable（MSVC toolchain）、Git for Windows、WebView2 Runtime（Win10/11 通常已内置）
+
+```powershell
+npm install
+npm run build:sidecar:win                # 编译 Node SEA sidecar（PowerShell）
+cd xlsx-diff-html-tauri; npm install; npm run build
+# 输出：src-tauri/target/release/bundle/nsis/xlsx-diff-html_*.exe
+#        src-tauri/target/release/bundle/msi/xlsx-diff-html_*.msi
+```
+
+**Dev 模式**（sidecar 需先构建一次）：
 
 ```bash
-npm run build:sidecar   # 根目录执行
-cd xlsx-diff-html-tauri && npm run dev
+# macOS
+npm run build:sidecar && cd xlsx-diff-html-tauri && npm run dev
+
+# Windows
+npm run build:sidecar:win; cd xlsx-diff-html-tauri; npm run dev
 ```
 
 ## 项目结构
@@ -62,7 +72,8 @@ xlsx-diff-html-tauri/
   src-tauri/src/main.rs     Rust 壳（spawn sidecar → WebviewWindow）
   src-tauri/binaries/       Node SEA sidecar（build:sidecar 输出，gitignored）
 scripts/
-  build-sidecar.sh          esbuild → Node SEA → codesign
+  build-sidecar.sh          macOS/Linux：esbuild → Node SEA → codesign
+  build-sidecar.ps1         Windows：esbuild → Node SEA（PowerShell）
 ```
 
 ## 依赖

@@ -72,4 +72,4 @@ cd xlsx-diff-html-tauri && npm run build     # 生产构建 → src-tauri/target
 
 - 回答用中文或英文。
 - 改动 diff 逻辑 → `lib/engine.mjs`；改 UI/HTTP → `xlsx-diff-html-web/app/server.mjs`。两个 `*.diff` 行为应保持一致（CLI 与 web 均调同一 `runDiff`）。
-- 改 Tauri 壳 → `xlsx-diff-html-tauri/src-tauri/src/main.rs`；改 sidecar 构建 → `scripts/build-sidecar.sh`。
+- 改 Tauri 壳 → `xlsx-diff-html-tauri/src-tauri/src/main.rs`；改 sidecar 构建 → `scripts/build-sidecar.sh`（macOS）/ `scripts/build-sidecar.ps1`（Windows）。
