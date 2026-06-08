@@ -3,8 +3,6 @@ const state = {
   currentPath: '',
   currentHasGit: false,
   repo: '',
-  oldFile: '',
-  newFile: '',
   rootLoaded: false,
   lang: initialLanguage(),
 };
@@ -12,6 +10,7 @@ const state = {
 const el = {
   language: document.querySelector('#language'),
   rootPath: document.querySelector('#rootPath'),
+  changeRoot: document.querySelector('#changeRoot'),
   runtimeInfo: document.querySelector('#runtimeInfo'),
   currentPath: document.querySelector('#currentPath'),
   refreshTree: document.querySelector('#refreshTree'),
@@ -27,9 +26,6 @@ const el = {
   dateFormat: document.querySelector('#dateFormat'),
   statusMeta: document.querySelector('#statusMeta'),
   changedFiles: document.querySelector('#changedFiles'),
-  oldFile: document.querySelector('#oldFile'),
-  newFile: document.querySelector('#newFile'),
-  runFileDiff: document.querySelector('#runFileDiff'),
   diffMeta: document.querySelector('#diffMeta'),
   openDiff: document.querySelector('#openDiff'),
   diffFrame: document.querySelector('#diffFrame'),
@@ -57,19 +53,10 @@ const i18n = {
     changedXlsx: 'Changed xlsx',
     noRepoSelected: 'No repo selected',
     selectRepoThenLoad: 'Select a repo, then load changed files.',
-    compareFiles: 'Compare files',
-    rootContained: 'Use root-contained xlsx files.',
-    compare: 'Compare',
-    old: 'Old',
-    new: 'New',
-    pickOldFile: 'Pick old file',
-    pickNewFile: 'Pick new file',
     diff: 'Diff',
     noDiffGenerated: 'No diff generated',
     open: 'Open',
     openDir: 'Open',
-    oldButton: 'Old',
-    newButton: 'New',
     noEntries: 'No directories or xlsx files.',
     repoSelected: 'Repo selected',
     selectRepoFirst: 'Select a repo directory first.',
@@ -78,9 +65,10 @@ const i18n = {
     noChangedFiles: 'No changed xlsx files.',
     diffButton: 'Diff',
     generatingDiff: 'Generating diff...',
-    pickBothFiles: 'Pick both old and new xlsx files.',
     noTableDiff: 'No table diff.',
     missingToken: 'Missing launch token. Start this page from XlsxDiffHtml.app.',
+    changeRoot: 'Change',
+    rootChangeFailed: 'Failed to change root',
   },
   zh: {
     language: '语言',
@@ -102,19 +90,10 @@ const i18n = {
     changedXlsx: '变更的 xlsx',
     noRepoSelected: '未选择仓库',
     selectRepoThenLoad: '先选择仓库，然后加载变更文件。',
-    compareFiles: '比较文件',
-    rootContained: '仅可使用根目录内的 xlsx 文件。',
-    compare: '比较',
-    old: '旧文件',
-    new: '新文件',
-    pickOldFile: '选择旧文件',
-    pickNewFile: '选择新文件',
     diff: '差异',
     noDiffGenerated: '尚未生成差异',
     open: '打开',
     openDir: '打开',
-    oldButton: '旧',
-    newButton: '新',
     noEntries: '没有目录或 xlsx 文件。',
     repoSelected: '已选择仓库',
     selectRepoFirst: '请先选择一个仓库目录。',
@@ -123,9 +102,10 @@ const i18n = {
     noChangedFiles: '没有变更的 xlsx 文件。',
     diffButton: '差异',
     generatingDiff: '正在生成差异...',
-    pickBothFiles: '请同时选择旧文件和新文件。',
     noTableDiff: '表格内容无差异。',
     missingToken: '缺少启动 token。请从 XlsxDiffHtml.app 启动页面。',
+    changeRoot: '更改',
+    rootChangeFailed: '更改根目录失败',
   },
 };
 
@@ -213,8 +193,38 @@ function diffOptions() {
 async function loadRoot() {
   const root = await api('/api/root');
   state.rootLoaded = true;
+  state.isTauri = !!root.isTauri;
   el.rootPath.textContent = root.rootDisplayPath;
   el.runtimeInfo.textContent = `${root.platform} ${root.arch}`;
+  if (root.lang === 'en' || root.lang === 'zh') {
+    state.lang = root.lang;
+    localStorage.setItem('xlsx-diff-html-lang', state.lang);
+    applyLanguage();
+  }
+}
+
+async function applyNewRoot(newPath) {
+  if (!newPath) return;
+  const result = await api('/api/root', {
+    method: 'POST',
+    body: JSON.stringify({ path: newPath }),
+  });
+  el.rootPath.textContent = result.rootDisplayPath;
+  state.currentPath = '';
+  state.currentHasGit = false;
+  state.repo = '';
+  el.repoPath.value = '';
+  el.statusMeta.textContent = t('noRepoSelected');
+  el.changedFiles.className = 'list empty';
+  el.changedFiles.textContent = t('selectRepoThenLoad');
+  await openDir('');
+}
+
+async function pickRootFolder() {
+  const result = await api('/api/open-folder-dialog', { method: 'POST' });
+  if (result.path) {
+    await applyNewRoot(result.path);
+  }
 }
 
 async function openDir(path) {
@@ -265,15 +275,7 @@ function renderTree(data) {
     const name = document.createElement('div');
     name.className = 'name';
     name.textContent = file.name;
-    const oldButton = document.createElement('button');
-    oldButton.type = 'button';
-    oldButton.textContent = t('oldButton');
-    oldButton.addEventListener('click', () => setFileSide('old', file.path));
-    const newButton = document.createElement('button');
-    newButton.type = 'button';
-    newButton.textContent = t('newButton');
-    newButton.addEventListener('click', () => setFileSide('new', file.path));
-    row.append(name, oldButton, newButton);
+    row.append(name);
     rows.push(row);
   }
 
@@ -293,16 +295,6 @@ function useRepo(path) {
   el.repoPath.value = path || '.';
   el.statusMeta.textContent = t('repoSelected');
   loadStatus().catch(showError);
-}
-
-function setFileSide(side, path) {
-  if (side === 'old') {
-    state.oldFile = path;
-    el.oldFile.value = path;
-  } else {
-    state.newFile = path;
-    el.newFile.value = path;
-  }
 }
 
 async function loadStatus() {
@@ -360,23 +352,6 @@ async function runGitDiff(file) {
   showDiff(result, file);
 }
 
-async function runFileDiff() {
-  if (!state.oldFile || !state.newFile) {
-    setMessage(t('pickBothFiles'), true);
-    return;
-  }
-  setMessage(t('generatingDiff'));
-  const result = await api('/api/diff/files', {
-    method: 'POST',
-    body: JSON.stringify({
-      oldFile: state.oldFile,
-      newFile: state.newFile,
-      ...diffOptions(),
-    }),
-  });
-  showDiff(result, `${state.oldFile} -> ${state.newFile}`);
-}
-
 function showDiff(result, label) {
   setMessage(result.noTableDiff ? t('noTableDiff') : '');
   el.diffMeta.textContent = label;
@@ -389,6 +364,12 @@ function showError(error) {
   setMessage(error.message || String(error), true);
 }
 
+el.openDiff.addEventListener('click', e => {
+  if (!state.isTauri) return;
+  e.preventDefault();
+  api('/api/open-url', { method: 'POST', body: JSON.stringify({ url: el.openDiff.href }) }).catch(showError);
+});
+el.changeRoot.addEventListener('click', () => pickRootFolder().catch(showError));
 el.refreshTree.addEventListener('click', () => openDir(state.currentPath).catch(showError));
 el.upDir.addEventListener('click', () => openDir(el.upDir.dataset.path || '').catch(showError));
 el.useCurrentRepo.addEventListener('click', () => useRepo(state.currentPath));
@@ -396,10 +377,10 @@ el.loadStatus.addEventListener('click', () => loadStatus().catch(showError));
 el.repoMode.addEventListener('change', () => {
   if (state.repo) loadStatus().catch(showError);
 });
-el.runFileDiff.addEventListener('click', () => runFileDiff().catch(showError));
 el.language.addEventListener('change', () => {
   state.lang = el.language.value === 'zh' ? 'zh' : 'en';
   localStorage.setItem('xlsx-diff-html-lang', state.lang);
+  api('/api/settings', { method: 'POST', body: JSON.stringify({ lang: state.lang }) }).catch(() => {});
   applyLanguage();
   openDir(state.currentPath).catch(showError);
   if (state.repo) loadStatus().catch(showError);

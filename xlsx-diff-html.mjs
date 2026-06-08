@@ -1,7 +1,8 @@
 #!/usr/bin/env node
-import { runDiff, normalizeFilePath, collectChangedXlsx } from './lib/engine.mjs';
+import { runDiff, runDiffFiles, normalizeFilePath, collectChangedXlsx } from './lib/engine.mjs';
 import { spawnGit } from './lib/git.mjs';
 import fsp from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { exec } from 'node:child_process';
 
@@ -10,12 +11,15 @@ function usage() {
     'Usage:\n' +
     '  xlsx-diff-html [options] FILE.xlsx [FILE2.xlsx ...]\n' +
     '  xlsx-diff-html [options] --changed\n' +
+    '  xlsx-diff-html [options] --compare LOCAL.xlsx REMOTE.xlsx\n' +
     '\n' +
     'Options:\n' +
     '  --all                     Export every sheet; sheets are separated by a blank line.\n' +
     '  --sheet N                 Export sheet N (1-based). Default: 1.\n' +
     '  --staged                  Compare HEAD vs staged index instead of working tree.\n' +
     '  --changed                 Compare all changed .xlsx files reported by git status.\n' +
+    '  --compare LOCAL REMOTE    Compare two files directly (no git). Use as external difftool:\n' +
+    '                            set Arguments to "--compare $LOCAL $REMOTE" in your Git client.\n' +
     '  --ignore-empty            Drop blank rows from the exported CSV.\n' +
     '  --skip-hidden             Skip rows and columns hidden in the sheet. Default: keep them.\n' +
     '  --raw                     Emit raw cell values instead of Excel-formatted display text.\n' +
@@ -25,7 +29,7 @@ function usage() {
     '                            cell\'s own displayed date format instead.\n' +
     '  --open                    Open generated HTML in the browser. Default.\n' +
     '  --no-open                 Do not open generated HTML.\n' +
-    '  --output PATH             Output HTML file for one input, or output directory for many.\n' +
+    '  --output PATH             Output HTML file. For git mode with many inputs, a directory.\n' +
     '  -h, --help                Show this help.\n',
   );
 }
@@ -51,10 +55,13 @@ function openBrowser(htmlPath) {
 
 // Parse argv
 const argv = process.argv.slice(2);
-let sheetMode = 'single';
+let sheetMode = 'all';
 let sheet = 1;
 let staged = false;
 let changed = false;
+let compareMode = false;
+let localFile = '';
+let remoteFile = '';
 let ignoreEmpty = false;
 let skipHidden = false;
 let raw = false;
@@ -77,6 +84,16 @@ for (let i = 0; i < argv.length; i += 1) {
     }
     case '--staged': staged = true; break;
     case '--changed': changed = true; break;
+    case '--compare': {
+      compareMode = true;
+      i += 1;
+      if (i >= argv.length) die('--compare requires two paths: LOCAL REMOTE');
+      localFile = argv[i];
+      i += 1;
+      if (i >= argv.length) die('--compare requires two paths: LOCAL REMOTE');
+      remoteFile = argv[i];
+      break;
+    }
     case '--ignore-empty': ignoreEmpty = true; break;
     case '--skip-hidden': skipHidden = true; break;
     case '--raw': raw = true; break;
@@ -103,12 +120,44 @@ for (let i = 0; i < argv.length; i += 1) {
 }
 
 const options = { sheetMode, sheet, ignoreEmpty, skipHidden, raw, dateFormat };
-const mode = staged ? 'staged' : 'working';
 const invocationCwd = process.cwd();
+
+// --compare mode: direct file-to-file diff, no git required
+if (compareMode) {
+  const localAbs = path.isAbsolute(localFile) ? localFile : path.join(invocationCwd, localFile);
+  const remoteAbs = path.isAbsolute(remoteFile) ? remoteFile : path.join(invocationCwd, remoteFile);
+
+  let htmlPath;
+  if (outputPath) {
+    htmlPath = path.isAbsolute(outputPath) ? outputPath : path.join(invocationCwd, outputPath);
+  } else {
+    const stamp = String(Date.now());
+    htmlPath = path.join(os.tmpdir(), 'xlsx-diff-html', `compare_${stamp}.diff.html`);
+  }
+
+  let result;
+  try {
+    result = await runDiffFiles({ localPath: localAbs, remotePath: remoteAbs, options, htmlPath });
+  } catch (err) {
+    die(err.message);
+  }
+
+  process.stdout.write(result.stdout + '\n');
+  if (result.stderr) process.stderr.write(result.stderr + '\n');
+  if (autoOpen) openBrowser(result.htmlPath);
+  process.exit(0);
+}
+
+const mode = staged ? 'staged' : 'working';
 
 // Find git repo root
 const topResult = await spawnGit(['rev-parse', '--show-toplevel'], invocationCwd);
-if (topResult.code !== 0) die('not a Git repository');
+if (topResult.code !== 0) {
+  if (inputFiles.length === 2) {
+    die('not a Git repository. To compare two files directly use: --compare ' + inputFiles.join(' '));
+  }
+  die('not a Git repository');
+}
 const repoRoot = topResult.stdout.toString('utf8').trim();
 
 const gitDirResult = await spawnGit(['rev-parse', '--git-dir'], repoRoot);

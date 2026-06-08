@@ -10,7 +10,10 @@
     <header class="topbar">
       <div>
         <h1>xlsx-diff-html</h1>
-        <div id="rootPath" class="root-path">Loading root...</div>
+        <div class="root-path-row">
+          <div id="rootPath" class="root-path">Loading root...</div>
+          <button id="changeRoot" type="button" class="small" data-i18n="changeRoot">Change</button>
+        </div>
       </div>
       <div class="topbar-actions">
         <label class="language-select">
@@ -58,7 +61,7 @@
           </div>
           <div class="control-row compact">
             <label class="inline">
-              <input id="allSheets" type="checkbox">
+              <input id="allSheets" type="checkbox" checked>
               <span data-i18n="allSheets">All sheets</span>
             </label>
             <label>
@@ -87,25 +90,7 @@
             <div id="changedFiles" class="list empty">Select a repo, then load changed files.</div>
           </div>
 
-          <div>
-            <div class="panel-head">
-              <div>
-                <h2 data-i18n="compareFiles">Compare files</h2>
-                <div class="muted" data-i18n="rootContained">Use root-contained xlsx files.</div>
-              </div>
-              <button id="runFileDiff" type="button" data-i18n="compare">Compare</button>
-            </div>
-            <div class="file-pair">
-              <label>
-                <span data-i18n="old">Old</span>
-                <input id="oldFile" type="text" readonly placeholder="Pick old file" data-i18n-placeholder="pickOldFile">
-              </label>
-              <label>
-                <span data-i18n="new">New</span>
-                <input id="newFile" type="text" readonly placeholder="Pick new file" data-i18n-placeholder="pickNewFile">
-              </label>
-            </div>
-          </div>
+
         </section>
 
         <section class="panel result-panel">

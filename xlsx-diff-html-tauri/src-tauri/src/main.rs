@@ -9,6 +9,29 @@ use tauri_plugin_shell::{process::CommandChild, ShellExt};
 
 struct NodeProcess(Mutex<Option<CommandChild>>);
 
+/// Parse `--compare LOCAL REMOTE` or bare two-positional-arg form (`LOCAL REMOTE`).
+fn find_compare_files() -> Option<(String, String)> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+
+    // --compare LOCAL REMOTE
+    if let Some(i) = args.iter().position(|a| a == "--compare") {
+        if i + 2 < args.len() {
+            return Some((args[i + 1].clone(), args[i + 2].clone()));
+        }
+    }
+
+    // Two positional (non-flag) args — what Git GUI clients pass as `$LOCAL $REMOTE`
+    let pos: Vec<&str> = args.iter()
+        .filter(|a| !a.starts_with('-'))
+        .map(String::as_str)
+        .collect();
+    if pos.len() == 2 {
+        return Some((pos[0].to_string(), pos[1].to_string()));
+    }
+
+    None
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
@@ -34,6 +57,13 @@ fn main() {
                 .expect("sidecar 'server' not found — run: npm run build:sidecar")
                 .env("XLSX_DIFF_HTML_READY_FILE", ready_file.to_str().unwrap())
                 .env("XLSX_DIFF_HTML_ROOT", root.to_str().unwrap());
+
+            let cmd = match find_compare_files() {
+                Some((local, remote)) => cmd
+                    .env("XLSX_DIFF_LOCAL", &local)
+                    .env("XLSX_DIFF_REMOTE", &remote),
+                None => cmd,
+            };
 
             let cmd = match find_public_dir(&handle) {
                 Some(pd) => cmd.env("XLSX_PUBLIC_DIR", pd.to_string_lossy().as_ref()),

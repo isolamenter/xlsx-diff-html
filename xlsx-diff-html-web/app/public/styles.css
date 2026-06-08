@@ -112,9 +112,34 @@ label {
   color: var(--muted);
 }
 
-.root-path {
+.root-path-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   margin-top: 4px;
+}
+
+.root-path {
   word-break: break-all;
+}
+
+.root-edit-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 6px;
+  margin-top: 4px;
+  max-width: 500px;
+}
+
+.root-edit-row input {
+  min-height: 28px;
+  padding: 3px 7px;
+}
+
+.small {
+  min-height: 24px;
+  padding: 2px 8px;
+  font-size: 12px;
 }
 
 .runtime {
@@ -166,6 +191,17 @@ label {
   gap: 12px;
   padding: 10px 12px;
   border-bottom: 1px solid var(--line);
+}
+
+.panel-head > div {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.panel-head > div .muted {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .sidebar {

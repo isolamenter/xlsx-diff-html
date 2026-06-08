@@ -21,6 +21,25 @@ let SESSION_TMP;
 const diffs = new Map();
 
 const BASE_PATH = process.env.PATH || '';
+const SETTINGS_FILE = path.join(os.homedir(), '.xlsx-diff-html-settings.json');
+let SETTINGS = {};
+
+async function loadSettings() {
+  try {
+    const data = JSON.parse(await fsp.readFile(SETTINGS_FILE, 'utf8'));
+    if (data && typeof data === 'object') SETTINGS = data;
+  } catch {
+    SETTINGS = {};
+  }
+}
+
+async function saveSettings() {
+  try {
+    await fsp.writeFile(SETTINGS_FILE, JSON.stringify(SETTINGS, null, 2));
+  } catch {
+    // non-fatal
+  }
+}
 
 function isInside(parent, child) {
   const relative = path.relative(parent, child);
@@ -230,6 +249,26 @@ function validateToken(req, url) {
   if (supplied !== TOKEN) {
     throw httpError(401, 'invalid or missing token');
   }
+}
+
+async function openFolderDialog() {
+  let command, args;
+  if (process.platform === 'darwin') {
+    command = 'osascript';
+    args = ['-e', 'POSIX path of (choose folder)'];
+  } else if (process.platform === 'win32') {
+    command = 'powershell';
+    args = [
+      '-NoProfile', '-Command',
+      'Add-Type -AssemblyName System.Windows.Forms; $f = New-Object System.Windows.Forms.FolderBrowserDialog; if ($f.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $f.SelectedPath } else { exit 1 }',
+    ];
+  } else {
+    return { path: null, supported: false };
+  }
+  const result = await runCommand(command, args, { timeoutMs: 120000 });
+  if (result.code !== 0) return { path: null, supported: true };
+  const selected = result.stdout.toString('utf8').trim();
+  return { path: selected || null, supported: true };
 }
 
 async function listDirectory(url) {
@@ -488,7 +527,61 @@ async function route(req, res) {
         rootDisplayPath: ROOT_REAL,
         platform: process.platform,
         arch: process.arch,
+        lang: typeof SETTINGS.lang === 'string' ? SETTINGS.lang : '',
+        isTauri: !!READY_FILE,
       });
+    }
+    if (req.method === 'POST' && url.pathname === '/api/open-url') {
+      const body = await readJson(req);
+      const target = body.url;
+      if (typeof target !== 'string') throw httpError(400, 'url required');
+      const parsed = new URL(target);
+      if (parsed.hostname !== '127.0.0.1' && parsed.hostname !== 'localhost') {
+        throw httpError(400, 'only localhost URLs allowed');
+      }
+      let command, args;
+      if (process.platform === 'darwin') {
+        command = 'open'; args = [target];
+      } else if (process.platform === 'win32') {
+        command = 'cmd'; args = ['/c', 'start', '', target];
+      } else {
+        command = 'xdg-open'; args = [target];
+      }
+      spawn(command, args, { detached: true, stdio: 'ignore' }).unref();
+      return json(res, 200, {});
+    }
+    if (req.method === 'POST' && url.pathname === '/api/open-folder-dialog') {
+      const { path: selectedPath, supported } = await openFolderDialog();
+      return json(res, 200, { path: selectedPath, supported });
+    }
+    if (req.method === 'POST' && url.pathname === '/api/root') {
+      const body = await readJson(req);
+      const newPath = body.path;
+      if (typeof newPath !== 'string' || !path.isAbsolute(newPath)) {
+        throw httpError(400, 'path must be an absolute path string');
+      }
+      let newReal;
+      try {
+        newReal = await fsp.realpath(newPath);
+      } catch {
+        throw httpError(404, 'path does not exist');
+      }
+      const stat = await fsp.stat(newReal);
+      if (!stat.isDirectory()) {
+        throw httpError(400, 'path must be a directory');
+      }
+      ROOT_REAL = newReal;
+      SETTINGS.root = ROOT_REAL;
+      await saveSettings();
+      return json(res, 200, { rootDisplayPath: ROOT_REAL });
+    }
+    if (req.method === 'POST' && url.pathname === '/api/settings') {
+      const body = await readJson(req);
+      if (body.lang === 'en' || body.lang === 'zh') {
+        SETTINGS.lang = body.lang;
+        await saveSettings();
+      }
+      return json(res, 200, { ok: true });
     }
     if (req.method === 'GET' && url.pathname === '/api/list') {
       return json(res, 200, await listDirectory(url));
@@ -527,14 +620,52 @@ const server = http.createServer((req, res) => {
   });
 });
 
+async function runStartupDiff(localPath, remotePath) {
+  let oldBuffer, newBuffer;
+  try { oldBuffer = await fsp.readFile(localPath); } catch { oldBuffer = Buffer.alloc(0); }
+  try { newBuffer = await fsp.readFile(remotePath); } catch { newBuffer = Buffer.alloc(0); }
+
+  const options = { sheetMode: 'all', sheet: 1, ignoreEmpty: false, skipHidden: false, raw: false, dateFormat: 'yyyy-mm-dd' };
+  const oldCsv = xlsxBufferToCsv(oldBuffer, options);
+  const newCsv = xlsxBufferToCsv(newBuffer, options);
+  const html = csvDiffToHtml(oldCsv, newCsv);
+  const htmlPath = path.join(SESSION_TMP, 'startup.html');
+  await fsp.writeFile(htmlPath, html);
+  const id = createDiffRecord(htmlPath);
+  return `/diff/${id}?token=${TOKEN}`;
+}
+
 async function start() {
-  ROOT_REAL = await fsp.realpath(ROOT_INPUT);
+  await loadSettings();
+  let startRoot = ROOT_INPUT;
+  if (SETTINGS.root && typeof SETTINGS.root === 'string') {
+    try {
+      const savedReal = await fsp.realpath(SETTINGS.root);
+      const stat = await fsp.stat(savedReal);
+      if (stat.isDirectory()) startRoot = SETTINGS.root;
+    } catch {
+      // saved root no longer valid, fall back to ROOT_INPUT
+    }
+  }
+  ROOT_REAL = await fsp.realpath(startRoot);
   SESSION_TMP = await fsp.mkdtemp(path.join(os.tmpdir(), 'xlsx-diff-html-web-'));
 
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
 
   const { port } = server.address();
-  const url = `http://127.0.0.1:${port}/?token=${TOKEN}`;
+  const diffLocal = process.env.XLSX_DIFF_LOCAL;
+  const diffRemote = process.env.XLSX_DIFF_REMOTE;
+
+  let startPath = `/?token=${TOKEN}`;
+  if (diffLocal && diffRemote) {
+    try {
+      startPath = await runStartupDiff(diffLocal, diffRemote);
+    } catch (err) {
+      console.error(`[xlsx-diff-html] startup diff failed: ${err.message}`);
+    }
+  }
+
+  const url = `http://127.0.0.1:${port}${startPath}`;
   if (READY_FILE) await fsp.writeFile(READY_FILE, url);
   console.log(`xlsx-diff-html web server listening on ${url}`);
   console.log(`root: ${ROOT_REAL}`);
