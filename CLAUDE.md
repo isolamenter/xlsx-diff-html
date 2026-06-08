@@ -2,9 +2,6 @@
 
 `.xlsx` 文件的 Git diff 工具：把表格转成 CSV，再用 `daff` 渲染成 HTML diff。
 
-> **当前关注范围：仅 CLI 与 Web(HTML) 两部分。macOS `.app` / DMG 打包暂时全部忽略**
-> （即 `scripts/build-dmg.sh`、`.app` bundle、`vendor/node`、`vendor/daff` 的内嵌与签名/公证，目前都不在工作范围内）。
-
 ## 组成
 
 数据流：`xlsx → xlsx2csv → CSV → daff → HTML`
@@ -14,11 +11,15 @@
 - **Web UI** — `xlsx-diff-html-web/app/`
   - `server.mjs` — 仅监听 `127.0.0.1` 的 Node HTTP 服务，启动时随机生成 `token`，所有 `/api/*` 与 `/diff/*` 请求都要带 token。直接 import `lib/` 模块，无子进程依赖（git 除外）。
   - `public/` — 前端 `index.html` / `app.js` / `styles.css`（中英双语）。
+- **Tauri 桌面 App** — `xlsx-diff-html-tauri/`
+  - `src-tauri/src/main.rs` — Rust 壳：spawn Node SEA sidecar，读 ready file 拿 URL，WebviewWindow 加载。
+  - sidecar 二进制 `src-tauri/binaries/server-<triple>` 由 `npm run build:sidecar` 生成（esbuild 打包 + Node SEA 编译）。
 
 ## 依赖
 
 - Node ≥ 20（已在 v20.19.6 验证）
 - npm 依赖：`daff@1.4.2`、`xlsx`(SheetJS，从 CDN tarball 装)，`npm install` 后在 `node_modules/` 下可用。
+- Tauri 构建链：Rust stable、`@tauri-apps/cli`（在 `xlsx-diff-html-tauri/` 下 `npm install` 安装）。
 
 ## 本地运行（dev，已验证）
 
@@ -35,6 +36,14 @@ Web 服务：
 ```bash
 XLSX_DIFF_HTML_ROOT="$PWD" node xlsx-diff-html-web/app/server.mjs
 # 打印形如 http://127.0.0.1:<port>/?token=<token> 的地址
+```
+
+Tauri 桌面 App（先构建 sidecar，再 `tauri dev` 或 `tauri build`）：
+
+```bash
+npm run build:sidecar                        # 生成 Node SEA 二进制
+cd xlsx-diff-html-tauri && npm run dev       # dev 模式
+cd xlsx-diff-html-tauri && npm run build     # 生产构建 → src-tauri/target/release/bundle/
 ```
 
 ## CLI 关键行为
@@ -63,4 +72,4 @@ XLSX_DIFF_HTML_ROOT="$PWD" node xlsx-diff-html-web/app/server.mjs
 
 - 回答用中文或英文。
 - 改动 diff 逻辑 → `lib/engine.mjs`；改 UI/HTTP → `xlsx-diff-html-web/app/server.mjs`。两个 `*.diff` 行为应保持一致（CLI 与 web 均调同一 `runDiff`）。
-- 暂不要碰 DMG/`.app`/签名相关代码。
+- 改 Tauri 壳 → `xlsx-diff-html-tauri/src-tauri/src/main.rs`；改 sidecar 构建 → `scripts/build-sidecar.sh`。

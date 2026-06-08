@@ -12,12 +12,12 @@ import { csvDiffToHtml } from '../../lib/daff.mjs';
 const __filename = fileURLToPath(import.meta.url);
 const APP_DIR = path.dirname(__filename);
 const PACKAGE_ROOT = path.resolve(APP_DIR, '..');
-const PUBLIC_DIR = path.join(APP_DIR, 'public');
+const PUBLIC_DIR = process.env.XLSX_PUBLIC_DIR || path.join(APP_DIR, 'public');
 const TOKEN = process.env.XLSX_DIFF_HTML_TOKEN || crypto.randomBytes(24).toString('hex');
 const READY_FILE = process.env.XLSX_DIFF_HTML_READY_FILE || '';
 const ROOT_INPUT = process.env.XLSX_DIFF_HTML_ROOT || PACKAGE_ROOT;
-const ROOT_REAL = await fsp.realpath(ROOT_INPUT);
-const SESSION_TMP = await fsp.mkdtemp(path.join(os.tmpdir(), 'xlsx-diff-html-web-'));
+let ROOT_REAL;
+let SESSION_TMP;
 const diffs = new Map();
 
 const BASE_PATH = process.env.PATH || '';
@@ -527,18 +527,25 @@ const server = http.createServer((req, res) => {
   });
 });
 
-server.listen(0, '127.0.0.1', async () => {
-  const address = server.address();
-  const url = `http://127.0.0.1:${address.port}/?token=${TOKEN}`;
+async function start() {
+  ROOT_REAL = await fsp.realpath(ROOT_INPUT);
+  SESSION_TMP = await fsp.mkdtemp(path.join(os.tmpdir(), 'xlsx-diff-html-web-'));
+
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+
+  const { port } = server.address();
+  const url = `http://127.0.0.1:${port}/?token=${TOKEN}`;
   if (READY_FILE) await fsp.writeFile(READY_FILE, url);
   console.log(`xlsx-diff-html web server listening on ${url}`);
   console.log(`root: ${ROOT_REAL}`);
-});
+}
 
 async function shutdown() {
   server.close();
-  await fsp.rm(SESSION_TMP, { recursive: true, force: true }).catch(() => {});
+  if (SESSION_TMP) await fsp.rm(SESSION_TMP, { recursive: true, force: true }).catch(() => {});
 }
 
 process.on('SIGINT', () => shutdown().finally(() => process.exit(0)));
 process.on('SIGTERM', () => shutdown().finally(() => process.exit(0)));
+
+start().catch((err) => { console.error(err); process.exit(1); });

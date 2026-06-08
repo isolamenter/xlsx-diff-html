@@ -1,7 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::{
-    path::PathBuf,
     sync::Mutex,
     time::{Duration, Instant},
 };
@@ -26,31 +25,31 @@ fn main() {
             let ready_file = std::env::temp_dir()
                 .join(format!("xlsx-diff-html-ready-{}.url", std::process::id()));
 
-            let server_mjs = server_mjs_path(&handle);
             let root = dirs::home_dir()
                 .unwrap_or_else(|| std::env::current_dir().expect("cwd"));
-            let node = node_binary();
 
-            eprintln!("[xlsx-diff-html] node={node} server={}", server_mjs.display());
-
-            let (mut rx, child) = handle
+            let cmd = handle
                 .shell()
-                .command(&node)
-                .args([server_mjs.to_str().expect("server path")])
+                .sidecar("server")
+                .expect("sidecar 'server' not found — run: npm run build:sidecar")
                 .env("XLSX_DIFF_HTML_READY_FILE", ready_file.to_str().unwrap())
-                .env("XLSX_DIFF_HTML_ROOT", root.to_str().unwrap())
-                .spawn()
-                .expect("failed to spawn node — is node installed?");
+                .env("XLSX_DIFF_HTML_ROOT", root.to_str().unwrap());
+
+            let cmd = match find_public_dir(&handle) {
+                Some(pd) => cmd.env("XLSX_PUBLIC_DIR", pd.to_string_lossy().as_ref()),
+                None => cmd,
+            };
+
+            let (mut rx, child) = cmd.spawn()
+                .expect("failed to spawn server sidecar");
 
             *handle.state::<NodeProcess>().0.lock().unwrap() = Some(child);
 
-            // drain stdout/stderr so node never blocks on a full pipe
+            // Drain stdout/stderr so the sidecar never blocks on a full pipe
             tauri::async_runtime::spawn(async move {
                 while rx.recv().await.is_some() {}
             });
 
-            // Wait synchronously for the server ready file (setup() runs on main thread,
-            // so the window is created on the main thread too — no threading issues)
             let url = match wait_for_ready_file_sync(&ready_file, Duration::from_secs(20)) {
                 Some(u) => u,
                 None => {
@@ -74,7 +73,6 @@ fn main() {
             .min_inner_size(800.0, 600.0)
             .build()?;
 
-            // Kill node when the main window is destroyed
             let handle2 = handle.clone();
             window.on_window_event(move |event| {
                 if let tauri::WindowEvent::Destroyed = event {
@@ -90,51 +88,24 @@ fn main() {
 
 // ── helpers ──────────────────────────────────────────────────────────────
 
-fn server_mjs_path(app: &tauri::AppHandle) -> PathBuf {
-    if let Ok(p) = std::env::var("XLSX_DIFF_HTML_SERVER_MJS") {
-        return PathBuf::from(p);
-    }
+/// Returns the `public/` directory for the Node server.
+/// In release: Resources/public/ (from the .app bundle).
+/// In dev: walks up from the exe to find the source tree's public/.
+fn find_public_dir(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
     if let Ok(res) = app.path().resource_dir() {
-        let p = res.join("server.mjs");
+        let p = res.join("public");
         if p.exists() {
-            return p;
+            return Some(p);
         }
     }
     let exe = std::env::current_exe().unwrap_or_default();
     for ancestor in exe.ancestors() {
-        let candidate = ancestor.join("xlsx-diff-html-web/app/server.mjs");
-        if candidate.exists() {
-            return candidate;
+        let p = ancestor.join("xlsx-diff-html-web/app/public");
+        if p.exists() {
+            return Some(p);
         }
     }
-    PathBuf::from("xlsx-diff-html-web/app/server.mjs")
-}
-
-fn node_binary() -> String {
-    if let Ok(p) = std::env::var("XLSX_DIFF_HTML_NODE") {
-        if std::path::Path::new(&p).exists() {
-            return p;
-        }
-    }
-    // nvm installs node under ~/.nvm/versions/node/<version>/bin/node
-    if let Some(home) = dirs::home_dir() {
-        let nvm_dir = home.join(".nvm/versions/node");
-        if let Ok(rd) = nvm_dir.read_dir() {
-            // pick the first version directory
-            if let Some(Ok(entry)) = rd.into_iter().next() {
-                let candidate = entry.path().join("bin/node");
-                if candidate.exists() {
-                    return candidate.to_string_lossy().to_string();
-                }
-            }
-        }
-    }
-    for p in ["/usr/local/bin/node", "/opt/homebrew/bin/node"] {
-        if std::path::Path::new(p).exists() {
-            return p.to_string();
-        }
-    }
-    "node".to_string()
+    None
 }
 
 fn kill_node(app: &tauri::AppHandle) {

@@ -1,70 +1,72 @@
-# XlsxDiffHtml
+# xlsx-diff-html
 
-XlsxDiffHtml builds a macOS Apple Silicon DMG for a local browser UI that compares changed `.xlsx` files in Git repositories and renders HTML diffs with `daff`.
+把 Git 仓库里变更的 `.xlsx` 文件转成 HTML diff，方便 code review。
 
-The app bundles Node, `daff`, and `xlsx` (SheetJS) into `XlsxDiffHtml.app`, then packages the app into a DMG.
+数据流：`xlsx → xlsx2csv (SheetJS) → CSV → daff → HTML`
 
-## Build
+## 使用方式
 
-Requirements:
-
-- macOS on Apple Silicon
-- `clang`
-- `codesign`
-- `hdiutil`
-- Node.js with `npm`
-
-Project npm dependencies:
-
-- `daff`
-- `xlsx` (SheetJS, installed from the SheetJS CDN tarball)
-
-Install project dependencies:
+### CLI
 
 ```bash
 npm install
+node xlsx-diff-html.mjs --changed          # 对 git status 里所有改动的 .xlsx 生成 diff
+node xlsx-diff-html.mjs FILE.xlsx          # 单文件（HEAD vs 工作区）
+node xlsx-diff-html.mjs --staged FILE.xlsx # HEAD vs 暂存区
 ```
 
-Build the DMG:
+常用选项：`--all`（所有 sheet）、`--sheet N`、`--skip-hidden`、`--output <dir>`、`--date-format <code>`。
+
+### Web UI（浏览器访问）
 
 ```bash
-npm run build:dmg
+XLSX_DIFF_HTML_ROOT="$PWD" node xlsx-diff-html-web/app/server.mjs
+# 输出形如 http://127.0.0.1:<port>/?token=<token> 的地址，用浏览器打开
 ```
 
-The output is:
+### Tauri 桌面 App（macOS，产出 .app / .dmg）
 
-```text
-dist/XlsxDiffHtml.dmg
-```
-
-You can override build metadata:
+依赖：Node ≥ 20、Rust stable、git
 
 ```bash
-BUNDLE_ID=com.example.XlsxDiffHtml APP_VERSION=1.0.0 ./scripts/build-dmg.sh
+# 1. 安装 Node 依赖（根目录）
+npm install
+
+# 2. 编译 Node SEA sidecar（esbuild 打包 + Node SEA 注入）
+npm run build:sidecar
+
+# 3. 构建 Tauri App
+cd xlsx-diff-html-tauri
+npm install
+npm run build
+# 输出：src-tauri/target/release/bundle/macos/xlsx-diff-html.app
+#        src-tauri/target/release/bundle/dmg/xlsx-diff-html_*.dmg
 ```
 
-## Signing
-
-The build uses ad-hoc signing:
-
-```text
-Signature=adhoc
-```
-
-This is enough for local packaging and testing, but it is not Developer ID signing or notarization. Apps distributed outside a trusted environment may still require a manual Gatekeeper allow step.
-
-## Runtime
-
-On first launch, the app asks which folder the Web UI may read. The selected root is stored in:
-
-```text
-~/Library/Application Support/XlsxDiffHtml/config.json
-```
-
-For one launch, override the root from Terminal:
+Dev 模式（sidecar 需先构建一次）：
 
 ```bash
-XLSX_DIFF_HTML_ROOT=/path/to/root /Applications/XlsxDiffHtml.app/Contents/MacOS/XlsxDiffHtml
+npm run build:sidecar   # 根目录执行
+cd xlsx-diff-html-tauri && npm run dev
 ```
 
-The generated DMG contains `XlsxDiffHtml.app` and an `Applications` shortcut.
+## 项目结构
+
+```
+lib/                        核心模块（engine.mjs、daff.mjs、git.mjs）
+xlsx-diff-html.mjs          CLI 入口
+xlsx-diff-html-web/app/
+  server.mjs                HTTP 服务（127.0.0.1 + token 鉴权）
+  public/                   前端（index.html / app.js / styles.css）
+xlsx-diff-html-tauri/
+  src-tauri/src/main.rs     Rust 壳（spawn sidecar → WebviewWindow）
+  src-tauri/binaries/       Node SEA sidecar（build:sidecar 输出，gitignored）
+scripts/
+  build-sidecar.sh          esbuild → Node SEA → codesign
+```
+
+## 依赖
+
+- `daff@1.4.2` — CSV diff 渲染
+- `xlsx` (SheetJS 0.20.3) — xlsx 读取
+- `esbuild`、`postject` — sidecar 构建工具（devDependencies）
