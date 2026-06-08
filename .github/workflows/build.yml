@@ -1,0 +1,60 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-14
+            sidecar-cmd: npm run build:sidecar
+            artifact-name: macos-dmg
+            artifact-path: xlsx-diff-html-tauri/src-tauri/target/release/bundle/dmg/*.dmg
+
+          - platform: windows-latest
+            sidecar-cmd: npm run build:sidecar:win
+            artifact-name: windows-installer
+            artifact-path: |
+              xlsx-diff-html-tauri/src-tauri/target/release/bundle/nsis/*.exe
+              xlsx-diff-html-tauri/src-tauri/target/release/bundle/msi/*.msi
+
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: xlsx-diff-html-tauri/src-tauri -> target
+
+      - name: Install root dependencies
+        run: npm install
+
+      - name: Build Node SEA sidecar
+        run: ${{ matrix.sidecar-cmd }}
+
+      - name: Install Tauri CLI
+        run: npm install
+        working-directory: xlsx-diff-html-tauri
+
+      - name: Build Tauri app
+        run: npm run build
+        working-directory: xlsx-diff-html-tauri
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact-name }}
+          path: ${{ matrix.artifact-path }}
+          if-no-files-found: error
