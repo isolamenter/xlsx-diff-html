@@ -2,6 +2,7 @@
   "name": "xlsx-diff-html",
   "version": "1.0.0",
   "private": true,
+  "license": "MIT",
   "description": "Browse Git xlsx diffs as HTML — CLI and Tauri desktop app.",
   "scripts": {
     "build:sidecar": "bash scripts/build-sidecar.sh",

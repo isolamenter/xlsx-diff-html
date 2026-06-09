@@ -1,6 +1,7 @@
 {
   "name": "xlsx-diff-html-tauri",
   "private": true,
+  "license": "MIT",
   "scripts": {
     "dev": "tauri dev",
     "build": "tauri build"
