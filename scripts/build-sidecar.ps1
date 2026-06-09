@@ -15,7 +15,7 @@ npx esbuild xlsx-diff-html-web/app/server.mjs `
   --format=cjs `
   --minify `
   "--define:import.meta.url=__import_meta_url" `
-  '--banner:js=var __import_meta_url = typeof __filename !== "undefined" ? require("url").pathToFileURL(__filename).href : "";' `
+  '--banner:js=var __import_meta_url = require(`node:url`).pathToFileURL(typeof __filename !== `undefined` ? __filename : process.execPath).href;' `
   --outfile=dist/server-bundle.cjs
 
 # 2. Create Node SEA config
