@@ -45,6 +45,81 @@ jobs:
       - name: Build Node SEA sidecar
         run: ${{ matrix.sidecar-cmd }}
 
+      - name: Smoke test Windows sidecar
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $server = Get-ChildItem "xlsx-diff-html-tauri/src-tauri/binaries/server-*-windows-*.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $server) {
+            throw "Windows sidecar executable was not generated"
+          }
+
+          $capabilities = Get-Content "xlsx-diff-html-tauri/src-tauri/capabilities/default.json" -Raw | ConvertFrom-Json
+          $sidecarPermission = $capabilities.permissions | Where-Object {
+            $_ -isnot [string] -and $_.identifier -eq "shell:allow-execute"
+          } | Select-Object -First 1
+          if (-not $sidecarPermission) {
+            throw "Tauri shell sidecar execute permission is missing"
+          }
+          $allowedSidecar = $sidecarPermission.allow | Where-Object {
+            $_.name -eq "binaries/server" -and $_.sidecar -eq $true
+          } | Select-Object -First 1
+          if (-not $allowedSidecar) {
+            throw "Tauri sidecar permission does not allow binaries/server"
+          }
+
+          $readyFile = Join-Path $env:RUNNER_TEMP "xlsx-diff-html-ready.url"
+          Remove-Item $readyFile -ErrorAction SilentlyContinue
+
+          $env:XLSX_DIFF_HTML_READY_FILE = $readyFile
+          $env:XLSX_DIFF_HTML_ROOT = (Get-Location).Path
+          $env:XLSX_PUBLIC_DIR = (Resolve-Path "xlsx-diff-html-web/app/public").Path
+          $process = Start-Process -FilePath $server.FullName -PassThru -WindowStyle Hidden
+
+          try {
+            $deadline = (Get-Date).AddSeconds(20)
+            while ((Get-Date) -lt $deadline) {
+              if (Test-Path $readyFile) {
+                break
+              }
+              if ($process.HasExited) {
+                throw "Windows sidecar exited before writing ready file with code $($process.ExitCode)"
+              }
+              Start-Sleep -Milliseconds 250
+            }
+
+            if (-not (Test-Path $readyFile)) {
+              throw "Windows sidecar did not write ready file"
+            }
+
+            $url = (Get-Content $readyFile -Raw).Trim()
+            if (-not $url.StartsWith("http://127.0.0.1:")) {
+              throw "Unexpected ready URL: $url"
+            }
+
+            $uri = [Uri]$url
+            $baseUrl = "$($uri.Scheme)://$($uri.Authority)"
+            $token = if ($uri.Query -match "(?:^\?|&)token=([^&]+)") {
+              [Uri]::UnescapeDataString($matches[1])
+            } else {
+              ""
+            }
+            if (-not $token) {
+              throw "Ready URL did not include token"
+            }
+
+            Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 10 | Out-Null
+            Invoke-WebRequest -Uri "$baseUrl/app.js" -UseBasicParsing -TimeoutSec 10 | Out-Null
+            Invoke-WebRequest -Uri "$baseUrl/styles.css" -UseBasicParsing -TimeoutSec 10 | Out-Null
+            Invoke-WebRequest -Uri "$baseUrl/api/root" -Headers @{ "x-xlsx-diff-token" = $token } -UseBasicParsing -TimeoutSec 10 | Out-Null
+          } finally {
+            if ($process -and -not $process.HasExited) {
+              Stop-Process -Id $process.Id -Force
+            }
+          }
+
       - name: Install Tauri CLI
         run: npm install
         working-directory: xlsx-diff-html-tauri
