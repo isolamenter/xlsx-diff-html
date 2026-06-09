@@ -684,7 +684,15 @@ const server = http.createServer((req, res) => {
   });
 });
 
-async function runStartupDiff(localPath, remotePath) {
+function openUrlInBrowser(url) {
+  let command, args;
+  if (process.platform === 'darwin') { command = 'open'; args = [url]; }
+  else if (process.platform === 'win32') { command = 'cmd'; args = ['/c', 'start', '', url]; }
+  else { command = 'xdg-open'; args = [url]; }
+  spawn(command, args, { detached: true, stdio: 'ignore' }).unref();
+}
+
+async function runStartupDiff(localPath, remotePath, port) {
   let oldBuffer, newBuffer;
   try { oldBuffer = await fsp.readFile(localPath); } catch { oldBuffer = Buffer.alloc(0); }
   try { newBuffer = await fsp.readFile(remotePath); } catch { newBuffer = Buffer.alloc(0); }
@@ -692,10 +700,20 @@ async function runStartupDiff(localPath, remotePath) {
   const options = { sheetMode: 'all', sheet: 1, ignoreEmpty: false, skipHidden: false, raw: false, dateFormat: 'yyyy-mm-dd' };
   const oldCsv = xlsxBufferToCsv(oldBuffer, options);
   const newCsv = xlsxBufferToCsv(newBuffer, options);
+
   const html = csvDiffToHtml(oldCsv, newCsv);
   const htmlPath = path.join(SESSION_TMP, 'startup.html');
   await fsp.writeFile(htmlPath, html);
-  const id = createDiffRecord(htmlPath, null);
+
+  const sbsHtml = csvDiffToHtmlSideBySide(oldCsv, newCsv);
+  const sbsHtmlPath = path.join(SESSION_TMP, 'startup.sbs.html');
+  await fsp.writeFile(sbsHtmlPath, sbsHtml);
+
+  const id = createDiffRecord(htmlPath, sbsHtmlPath);
+
+  // Auto-open external browser with side-by-side view
+  openUrlInBrowser(`http://127.0.0.1:${port}/diff/${id}/sbs?token=${TOKEN}`);
+
   return `/diff/${id}?token=${TOKEN}`;
 }
 
@@ -723,7 +741,7 @@ async function start() {
   let startPath = `/?token=${TOKEN}`;
   if (diffLocal && diffRemote) {
     try {
-      startPath = await runStartupDiff(diffLocal, diffRemote);
+      startPath = await runStartupDiff(diffLocal, diffRemote, port);
     } catch (err) {
       console.error(`[xlsx-diff-html] startup diff failed: ${err.message}`);
     }
