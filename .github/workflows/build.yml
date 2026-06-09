@@ -1,9 +1,12 @@
-name: Build
+name: Build and Release
 
 on:
   push:
-    branches: [main]
+    branches: [master]
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -14,7 +17,8 @@ jobs:
           - platform: macos-14
             sidecar-cmd: npm run build:sidecar
             artifact-name: macos-dmg
-            artifact-path: xlsx-diff-html-tauri/src-tauri/target/release/bundle/dmg/*.dmg
+            artifact-path: 
+              xlsx-diff-html-tauri/src-tauri/target/release/bundle/dmg/*.dmg
 
           - platform: windows-latest
             sidecar-cmd: npm run build:sidecar:win
@@ -147,3 +151,30 @@ jobs:
           name: ${{ matrix.artifact-name }}
           path: ${{ matrix.artifact-path }}
           if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Get version
+        id: get_version
+        run: |
+          VERSION=$(jq -r '.version' xlsx-diff-html-tauri/src-tauri/tauri.conf.json)
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.get_version.outputs.VERSION }}
+          name: Release v${{ steps.get_version.outputs.VERSION }}
+          files: artifacts/**/*
+          draft: false
+          prerelease: false
+          token: ${{ secrets.GITHUB_TOKEN }}
