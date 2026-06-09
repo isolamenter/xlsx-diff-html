@@ -76,7 +76,21 @@ jobs:
           $env:XLSX_DIFF_HTML_READY_FILE = $readyFile
           $env:XLSX_DIFF_HTML_ROOT = (Get-Location).Path
           $env:XLSX_PUBLIC_DIR = (Resolve-Path "xlsx-diff-html-web/app/public").Path
-          $process = Start-Process -FilePath $server.FullName -PassThru -WindowStyle Hidden
+          $sidecarStdout = Join-Path $env:RUNNER_TEMP "xlsx-diff-html-sidecar.stdout.log"
+          $sidecarStderr = Join-Path $env:RUNNER_TEMP "xlsx-diff-html-sidecar.stderr.log"
+          Remove-Item $sidecarStdout, $sidecarStderr -ErrorAction SilentlyContinue
+          $process = Start-Process `
+            -FilePath $server.FullName `
+            -PassThru `
+            -NoNewWindow `
+            -RedirectStandardOutput $sidecarStdout `
+            -RedirectStandardError $sidecarStderr
+
+          function Get-SidecarLog {
+            $stdout = if (Test-Path $sidecarStdout) { Get-Content $sidecarStdout -Raw } else { "" }
+            $stderr = if (Test-Path $sidecarStderr) { Get-Content $sidecarStderr -Raw } else { "" }
+            return "stdout:`n$stdout`nstderr:`n$stderr"
+          }
 
           try {
             $deadline = (Get-Date).AddSeconds(20)
@@ -85,13 +99,13 @@ jobs:
                 break
               }
               if ($process.HasExited) {
-                throw "Windows sidecar exited before writing ready file with code $($process.ExitCode)"
+                throw "Windows sidecar exited before writing ready file with code $($process.ExitCode)`n$(Get-SidecarLog)"
               }
               Start-Sleep -Milliseconds 250
             }
 
             if (-not (Test-Path $readyFile)) {
-              throw "Windows sidecar did not write ready file"
+              throw "Windows sidecar did not write ready file`n$(Get-SidecarLog)"
             }
 
             $url = (Get-Content $readyFile -Raw).Trim()
