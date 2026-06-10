@@ -37,8 +37,7 @@ select {
   font: inherit;
 }
 
-button,
-.button-link {
+button {
   min-height: 32px;
   border: 1px solid var(--line);
   border-radius: 6px;
@@ -50,13 +49,11 @@ button,
   white-space: nowrap;
 }
 
-button:hover,
-.button-link:hover {
+button:hover {
   border-color: var(--accent);
 }
 
-button:disabled,
-.button-link.disabled {
+button:disabled {
   opacity: 0.45;
   pointer-events: none;
 }
@@ -128,19 +125,6 @@ label {
 
 .root-path {
   word-break: break-all;
-}
-
-.root-edit-row {
-  display: grid;
-  grid-template-columns: 1fr auto auto;
-  gap: 6px;
-  margin-top: 4px;
-  max-width: 500px;
-}
-
-.root-edit-row input {
-  min-height: 28px;
-  padding: 3px 7px;
 }
 
 .small {
@@ -255,18 +239,6 @@ label {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.badge {
-  display: inline-flex;
-  align-items: center;
-  min-height: 22px;
-  border-radius: 999px;
-  padding: 2px 7px;
-  background: #e8f2ee;
-  color: var(--accent);
-  font-size: 12px;
-  font-weight: 700;
 }
 
 .controls {

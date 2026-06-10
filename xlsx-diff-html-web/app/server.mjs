@@ -1,4 +1,4 @@
-import { spawn, exec } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
@@ -6,9 +6,9 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { xlsxBufferToCsv, xlsxSheetToCsv } from '../../lib/engine.mjs';
+import { xlsxBufferToCsv, xlsxSheetToCsv, XLSX_READ_OPTIONS } from '../../lib/engine.mjs';
 import { csvDiffToHtml, csvDiffToHtmlSideBySide } from '../../lib/daff.mjs';
-import { spawnGit, parseGitStatus } from '../../lib/git.mjs';
+import { spawnGit, parseGitStatus, stripLongPathPrefix } from '../../lib/git.mjs';
 import * as XLSX from 'xlsx';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -160,17 +160,6 @@ function commandHttpError(statusCode, message, result) {
   });
 }
 
-function stripLongPathPrefix(p) {
-  if (typeof p !== 'string') return p;
-  if (p.startsWith('\\\\?\\UNC\\')) {
-    return '\\\\' + p.slice(8);
-  }
-  if (p.startsWith('\\\\?\\')) {
-    return p.slice(4);
-  }
-  return p;
-}
-
 function runCommand(command, args, options = {}) {
   const {
     cwd = ROOT_REAL,
@@ -265,37 +254,21 @@ function validateToken(req, url) {
   }
 }
 
-async function openFolderDialog() {
+// kind: 'folder' selects a directory; 'file' selects a single .xlsx file.
+async function openNativeDialog(kind) {
   let command, args;
   if (process.platform === 'darwin') {
     command = 'osascript';
-    args = ['-e', 'POSIX path of (choose folder)'];
+    const expr = kind === 'folder'
+      ? 'POSIX path of (choose folder)'
+      : 'POSIX path of (choose file of type {"org.openxmlformats.spreadsheetml.sheet"})';
+    args = ['-e', expr];
   } else if (process.platform === 'win32') {
     command = 'powershell';
-    args = [
-      '-NoProfile', '-Command',
-      'Add-Type -AssemblyName System.Windows.Forms; $f = New-Object System.Windows.Forms.FolderBrowserDialog; if ($f.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $f.SelectedPath } else { exit 1 }',
-    ];
-  } else {
-    return { path: null, supported: false };
-  }
-  const result = await runCommand(command, args, { timeoutMs: 120000 });
-  if (result.code !== 0) return { path: null, supported: true };
-  const selected = result.stdout.toString('utf8').trim();
-  return { path: selected || null, supported: true };
-}
-
-async function openFileDialog() {
-  let command, args;
-  if (process.platform === 'darwin') {
-    command = 'osascript';
-    args = ['-e', 'POSIX path of (choose file of type {"org.openxmlformats.spreadsheetml.sheet"})'];
-  } else if (process.platform === 'win32') {
-    command = 'powershell';
-    args = [
-      '-NoProfile', '-Command',
-      'Add-Type -AssemblyName System.Windows.Forms; $f = New-Object System.Windows.Forms.OpenFileDialog; $f.Filter = "Excel Files (*.xlsx)|*.xlsx"; if ($f.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $f.FileName } else { exit 1 }',
-    ];
+    const ps = kind === 'folder'
+      ? 'Add-Type -AssemblyName System.Windows.Forms; $f = New-Object System.Windows.Forms.FolderBrowserDialog; if ($f.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $f.SelectedPath } else { exit 1 }'
+      : 'Add-Type -AssemblyName System.Windows.Forms; $f = New-Object System.Windows.Forms.OpenFileDialog; $f.Filter = "Excel Files (*.xlsx)|*.xlsx"; if ($f.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $f.FileName } else { exit 1 }';
+    args = ['-NoProfile', '-Command', ps];
   } else {
     return { path: null, supported: false };
   }
@@ -402,6 +375,63 @@ function createDiffRecord(htmlPath, sbsHtmlPath) {
   return id;
 }
 
+function readWorkbook(buffer) {
+  if (!buffer.length) return null;
+  try {
+    return XLSX.read(buffer, XLSX_READ_OPTIONS);
+  } catch {
+    return null;
+  }
+}
+
+// Diff every sheet across two xlsx buffers, writing per-sheet HTML views to
+// SESSION_TMP and returning { sheets: [{ name, hasDiff, htmlUrl, sbsUrl }] }.
+async function buildSheetDiffs(oldBuffer, newBuffer, options, beforeLabel, afterLabel) {
+  const oldWb = readWorkbook(oldBuffer);
+  const newWb = readWorkbook(newBuffer);
+
+  const oldSheets = oldWb ? oldWb.SheetNames : [];
+  const newSheets = newWb ? newWb.SheetNames : [];
+  const allSheetNames = Array.from(new Set([...oldSheets, ...newSheets]));
+
+  const sheets = [];
+  for (const sheetName of allSheetNames) {
+    let oldCsv = '';
+    let newCsv = '';
+    if (oldWb) {
+      try { oldCsv = xlsxSheetToCsv(oldWb, sheetName, options); } catch { /* empty CSV fallback */ }
+    }
+    if (newWb) {
+      try { newCsv = xlsxSheetToCsv(newWb, sheetName, options); } catch { /* empty CSV fallback */ }
+    }
+
+    const hasDiff = oldCsv !== newCsv;
+    let htmlUrl = '';
+    let sbsUrl = '';
+
+    if (hasDiff) {
+      const prefix = crypto.randomBytes(12).toString('hex');
+      const htmlPath = path.join(SESSION_TMP, `${prefix}.html`);
+      const sbsHtmlPath = path.join(SESSION_TMP, `${prefix}.sbs.html`);
+
+      const htmlContent = csvDiffToHtml(oldCsv, newCsv, beforeLabel, afterLabel, sheetName);
+      const sbsHtmlContent = csvDiffToHtmlSideBySide(oldCsv, newCsv, beforeLabel, afterLabel, sheetName);
+
+      await fsp.mkdir(path.dirname(htmlPath), { recursive: true });
+      await fsp.writeFile(htmlPath, htmlContent);
+      await fsp.writeFile(sbsHtmlPath, sbsHtmlContent);
+
+      const id = createDiffRecord(htmlPath, sbsHtmlPath);
+      htmlUrl = `/diff/${id}?token=${TOKEN}`;
+      sbsUrl = `/diff/${id}/sbs?token=${TOKEN}`;
+    }
+
+    sheets.push({ name: sheetName, hasDiff, htmlUrl, sbsUrl });
+  }
+
+  return { sheets };
+}
+
 async function diffGit(req) {
   const body = await readJson(req);
   const mode = body.mode === 'staged' ? 'staged' : 'working';
@@ -426,129 +456,9 @@ async function diffGit(req) {
     }
   }
 
-  let oldWb = null;
-  let newWb = null;
-  if (oldBuffer.length) {
-    try {
-      oldWb = XLSX.read(oldBuffer, { type: 'buffer', cellDates: true, cellNF: true, cellStyles: true });
-    } catch (e) {
-      // Ignored or handled
-    }
-  }
-  if (newBuffer.length) {
-    try {
-      newWb = XLSX.read(newBuffer, { type: 'buffer', cellDates: true, cellNF: true, cellStyles: true });
-    } catch (e) {
-      // Ignored or handled
-    }
-  }
-
-  const oldSheets = oldWb ? oldWb.SheetNames : [];
-  const newSheets = newWb ? newWb.SheetNames : [];
-  const allSheetNames = Array.from(new Set([...oldSheets, ...newSheets]));
-
-  const sheets = [];
-
-  for (const sheetName of allSheetNames) {
-    let oldCsv = '';
-    let newCsv = '';
-    if (oldWb) {
-      try {
-        oldCsv = xlsxSheetToCsv(oldWb, sheetName, options);
-      } catch (e) {
-        // Ignored, empty CSV fallback
-      }
-    }
-    if (newWb) {
-      try {
-        newCsv = xlsxSheetToCsv(newWb, sheetName, options);
-      } catch (e) {
-        // Ignored, empty CSV fallback
-      }
-    }
-
-    const hasDiff = oldCsv !== newCsv;
-    let htmlUrl = '';
-    let sbsUrl = '';
-
-    if (hasDiff) {
-      const prefix = crypto.randomBytes(12).toString('hex');
-      const htmlPath = path.join(SESSION_TMP, `${prefix}.html`);
-      const sbsHtmlPath = path.join(SESSION_TMP, `${prefix}.sbs.html`);
-
-      const beforeLabel = `HEAD:${file}`;
-      const afterLabel = mode === 'staged' ? `Index:${file}` : file;
-
-      const htmlContent = csvDiffToHtml(oldCsv, newCsv, beforeLabel, afterLabel, sheetName);
-      const sbsHtmlContent = csvDiffToHtmlSideBySide(oldCsv, newCsv, beforeLabel, afterLabel, sheetName);
-
-      await fsp.mkdir(path.dirname(htmlPath), { recursive: true });
-      await fsp.writeFile(htmlPath, htmlContent);
-      await fsp.writeFile(sbsHtmlPath, sbsHtmlContent);
-
-      const id = createDiffRecord(htmlPath, sbsHtmlPath);
-      htmlUrl = `/diff/${id}?token=${TOKEN}`;
-      sbsUrl = `/diff/${id}/sbs?token=${TOKEN}`;
-    }
-
-    sheets.push({
-      name: sheetName,
-      hasDiff,
-      htmlUrl,
-      sbsUrl
-    });
-  }
-
-  return {
-    sheets
-  };
-}
-
-async function diffFiles(req) {
-  const body = await readJson(req);
-  const oldFile = await resolveExistingRelative(body.oldFile || '', 'oldFile');
-  const newFile = await resolveExistingRelative(body.newFile || '', 'newFile');
-  if (!isXlsxPath(oldFile) || !isXlsxPath(newFile)) {
-    throw httpError(400, 'oldFile and newFile must be .xlsx files');
-  }
-
-  const oldStat = await fsp.stat(oldFile);
-  const newStat = await fsp.stat(newFile);
-  if (!oldStat.isFile() || !newStat.isFile()) {
-    throw httpError(400, 'oldFile and newFile must be files');
-  }
-
-  const options = readDiffOptions(body);
-  const prefix = crypto.randomBytes(12).toString('hex');
-  const htmlPath = path.join(SESSION_TMP, `${prefix}.html`);
-  const sbsHtmlPath = path.join(SESSION_TMP, `${prefix}.sbs.html`);
-
-  const [oldBuffer, newBuffer] = await Promise.all([fsp.readFile(oldFile), fsp.readFile(newFile)]);
-  let oldCsv, newCsv;
-  try {
-    oldCsv = xlsxBufferToCsv(oldBuffer, options);
-    newCsv = xlsxBufferToCsv(newBuffer, options);
-  } catch (err) {
-    throw httpError(500, `xlsx2csv failed: ${err.message}`);
-  }
-
-  const noTableDiff = oldCsv === newCsv;
-  const beforeLabel = relFromRoot(oldFile);
-  const afterLabel = relFromRoot(newFile);
-  const sheetLabel = options.sheetMode === 'all' ? 'all' : String(options.sheet ?? 1);
-
-  const html = csvDiffToHtml(oldCsv, newCsv, beforeLabel, afterLabel, sheetLabel);
-  await fsp.writeFile(htmlPath, html);
-  await fsp.writeFile(sbsHtmlPath, csvDiffToHtmlSideBySide(oldCsv, newCsv, beforeLabel, afterLabel, sheetLabel));
-
-  const id = createDiffRecord(htmlPath, sbsHtmlPath);
-  const stdout = [
-    `Comparing: ${relFromRoot(oldFile)} -> ${relFromRoot(newFile)}`,
-    options.sheetMode === 'all' ? 'Sheet: all' : `Sheet: ${options.sheet}`,
-    noTableDiff ? 'Diff: no table diff' : '',
-  ].filter(Boolean).join('\n');
-
-  return { id, htmlUrl: `/diff/${id}?token=${TOKEN}`, sbsUrl: `/diff/${id}/sbs?token=${TOKEN}`, noTableDiff, stdout, stderr: '' };
+  const beforeLabel = `HEAD:${file}`;
+  const afterLabel = mode === 'staged' ? `Index:${file}` : file;
+  return buildSheetDiffs(oldBuffer, newBuffer, options, beforeLabel, afterLabel);
 }
 
 async function diffLocal(req) {
@@ -563,96 +473,20 @@ async function diffLocal(req) {
   const oldPath = path.isAbsolute(oldFile) ? oldFile : path.resolve(ROOT_REAL, oldFile);
   const newPath = path.isAbsolute(newFile) ? newFile : path.resolve(ROOT_REAL, newFile);
 
-  const oldExists = await fileExists(oldPath);
-  const newExists = await fileExists(newPath);
-
-  if (!oldExists) {
+  if (!(await fileExists(oldPath))) {
     throw httpError(404, `oldFile not found: ${oldFile}`);
   }
-  if (!newExists) {
+  if (!(await fileExists(newPath))) {
     throw httpError(404, `newFile not found: ${newFile}`);
   }
 
   const options = readDiffOptions(body);
-
   const [oldBuffer, newBuffer] = await Promise.all([
     fsp.readFile(oldPath),
-    fsp.readFile(newPath)
+    fsp.readFile(newPath),
   ]);
 
-  let oldWb = null;
-  let newWb = null;
-  if (oldBuffer.length) {
-    try {
-      oldWb = XLSX.read(oldBuffer, { type: 'buffer', cellDates: true, cellNF: true, cellStyles: true });
-    } catch (e) {
-      // Ignored
-    }
-  }
-  if (newBuffer.length) {
-    try {
-      newWb = XLSX.read(newBuffer, { type: 'buffer', cellDates: true, cellNF: true, cellStyles: true });
-    } catch (e) {
-      // Ignored
-    }
-  }
-
-  const oldSheets = oldWb ? oldWb.SheetNames : [];
-  const newSheets = newWb ? newWb.SheetNames : [];
-  const allSheetNames = Array.from(new Set([...oldSheets, ...newSheets]));
-
-  const sheets = [];
-
-  for (const sheetName of allSheetNames) {
-    let oldCsv = '';
-    let newCsv = '';
-    if (oldWb) {
-      try {
-        oldCsv = xlsxSheetToCsv(oldWb, sheetName, options);
-      } catch (e) {
-        // Ignored
-      }
-    }
-    if (newWb) {
-      try {
-        newCsv = xlsxSheetToCsv(newWb, sheetName, options);
-      } catch (e) {
-        // Ignored
-      }
-    }
-
-    const hasDiff = oldCsv !== newCsv;
-    let htmlUrl = '';
-    let sbsUrl = '';
-
-    if (hasDiff) {
-      const prefix = crypto.randomBytes(12).toString('hex');
-      const htmlPath = path.join(SESSION_TMP, `${prefix}.html`);
-      const sbsHtmlPath = path.join(SESSION_TMP, `${prefix}.sbs.html`);
-
-      const htmlContent = csvDiffToHtml(oldCsv, newCsv, oldFile, newFile, sheetName);
-      const sbsHtmlContent = csvDiffToHtmlSideBySide(oldCsv, newCsv, oldFile, newFile, sheetName);
-
-      await fsp.mkdir(path.dirname(htmlPath), { recursive: true });
-      await fsp.writeFile(htmlPath, htmlContent);
-      await fsp.writeFile(sbsHtmlPath, sbsHtmlContent);
-
-      const id = createDiffRecord(htmlPath, sbsHtmlPath);
-      htmlUrl = `/diff/${id}?token=${TOKEN}`;
-      sbsUrl = `/diff/${id}/sbs?token=${TOKEN}`;
-    }
-
-    sheets.push({
-      name: sheetName,
-      hasDiff,
-      htmlUrl,
-      sbsUrl
-    });
-  }
-
-  return {
-    sheets
-  };
+  return buildSheetDiffs(oldBuffer, newBuffer, options, oldFile, newFile);
 }
 
 async function fileExists(file) {
@@ -726,25 +560,15 @@ async function route(req, res) {
       if (parsed.hostname !== '127.0.0.1' && parsed.hostname !== 'localhost') {
         throw httpError(400, 'only localhost URLs allowed');
       }
-      if (process.platform === 'win32') {
-        exec(`start "" ${JSON.stringify(target)}`).unref();
-      } else {
-        let command, args;
-        if (process.platform === 'darwin') {
-          command = 'open'; args = [target];
-        } else {
-          command = 'xdg-open'; args = [target];
-        }
-        spawn(command, args, { detached: true, stdio: 'ignore' }).unref();
-      }
+      openUrlInBrowser(target);
       return json(res, 200, {});
     }
     if (req.method === 'POST' && url.pathname === '/api/open-folder-dialog') {
-      const { path: selectedPath, supported } = await openFolderDialog();
+      const { path: selectedPath, supported } = await openNativeDialog('folder');
       return json(res, 200, { path: selectedPath, supported });
     }
     if (req.method === 'POST' && url.pathname === '/api/open-file-dialog') {
-      const { path: selectedPath, supported } = await openFileDialog();
+      const { path: selectedPath, supported } = await openNativeDialog('file');
       return json(res, 200, { path: selectedPath, supported });
     }
     if (req.method === 'POST' && url.pathname === '/api/root') {
@@ -784,9 +608,6 @@ async function route(req, res) {
     }
     if (req.method === 'POST' && url.pathname === '/api/diff/git') {
       return json(res, 200, await diffGit(req));
-    }
-    if (req.method === 'POST' && url.pathname === '/api/diff/files') {
-      return json(res, 200, await diffFiles(req));
     }
     if (req.method === 'POST' && url.pathname === '/api/diff/local') {
       return json(res, 200, await diffLocal(req));
