@@ -90,7 +90,25 @@
             <div id="changedFiles" class="list empty">Select a repo, then load changed files.</div>
           </div>
 
-
+          <div>
+            <div class="panel-head">
+              <div>
+                <h2 data-i18n="localDiff">Local Diff</h2>
+                <div class="muted" data-i18n="localDiffDesc">Compare two local xlsx files</div>
+              </div>
+            </div>
+            <div class="file-pair">
+              <div class="file-picker-row">
+                <input id="localFileOld" type="text" readonly placeholder="Select file A (old)" data-i18n-placeholder="selectFileOld">
+                <button id="pickLocalFileOld" type="button" class="small" data-i18n="browse">Browse</button>
+              </div>
+              <div class="file-picker-row">
+                <input id="localFileNew" type="text" readonly placeholder="Select file B (new)" data-i18n-placeholder="selectFileNew">
+                <button id="pickLocalFileNew" type="button" class="small" data-i18n="browse">Browse</button>
+              </div>
+              <button id="runLocalDiff" type="button" data-i18n="diffButton" style="margin-top: 8px;">Diff</button>
+            </div>
+          </div>
         </section>
 
         <section class="panel result-panel">

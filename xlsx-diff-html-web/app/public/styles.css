@@ -330,6 +330,16 @@ label {
   padding: 12px;
 }
 
+.file-picker-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.file-picker-row input {
+  flex: 1;
+}
+
 .result-panel {
   min-height: 0;
   display: grid;

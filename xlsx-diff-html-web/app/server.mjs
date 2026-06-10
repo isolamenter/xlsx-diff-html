@@ -286,6 +286,26 @@ async function openFolderDialog() {
   return { path: selected || null, supported: true };
 }
 
+async function openFileDialog() {
+  let command, args;
+  if (process.platform === 'darwin') {
+    command = 'osascript';
+    args = ['-e', 'POSIX path of (choose file of type {"org.openxmlformats.spreadsheetml.sheet"})'];
+  } else if (process.platform === 'win32') {
+    command = 'powershell';
+    args = [
+      '-NoProfile', '-Command',
+      'Add-Type -AssemblyName System.Windows.Forms; $f = New-Object System.Windows.Forms.OpenFileDialog; $f.Filter = "Excel Files (*.xlsx)|*.xlsx"; if ($f.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $f.FileName } else { exit 1 }',
+    ];
+  } else {
+    return { path: null, supported: false };
+  }
+  const result = await runCommand(command, args, { timeoutMs: 120000 });
+  if (result.code !== 0) return { path: null, supported: true };
+  const selected = result.stdout.toString('utf8').trim();
+  return { path: selected || null, supported: true };
+}
+
 async function listDirectory(url) {
   const dirReal = await resolveExistingRelative(url.searchParams.get('path') || '', 'path');
   const stat = await fsp.stat(dirReal);
@@ -600,6 +620,110 @@ async function diffExternal(req) {
   return { id, sbsUrl: `/diff/${id}/sbs?token=${TOKEN}`, noTableDiff: oldCsv === newCsv };
 }
 
+async function diffLocal(req) {
+  const body = await readJson(req);
+  const oldFile = body.oldFile;
+  const newFile = body.newFile;
+
+  if (typeof oldFile !== 'string' || typeof newFile !== 'string') {
+    throw httpError(400, 'oldFile and newFile must be strings');
+  }
+
+  const oldPath = path.isAbsolute(oldFile) ? oldFile : path.resolve(ROOT_REAL, oldFile);
+  const newPath = path.isAbsolute(newFile) ? newFile : path.resolve(ROOT_REAL, newFile);
+
+  const oldExists = await fileExists(oldPath);
+  const newExists = await fileExists(newPath);
+
+  if (!oldExists) {
+    throw httpError(404, `oldFile not found: ${oldFile}`);
+  }
+  if (!newExists) {
+    throw httpError(404, `newFile not found: ${newFile}`);
+  }
+
+  const options = readDiffOptions(body);
+
+  const [oldBuffer, newBuffer] = await Promise.all([
+    fsp.readFile(oldPath),
+    fsp.readFile(newPath)
+  ]);
+
+  let oldWb = null;
+  let newWb = null;
+  if (oldBuffer.length) {
+    try {
+      oldWb = XLSX.read(oldBuffer, { type: 'buffer', cellDates: true, cellNF: true, cellStyles: true });
+    } catch (e) {
+      // Ignored
+    }
+  }
+  if (newBuffer.length) {
+    try {
+      newWb = XLSX.read(newBuffer, { type: 'buffer', cellDates: true, cellNF: true, cellStyles: true });
+    } catch (e) {
+      // Ignored
+    }
+  }
+
+  const oldSheets = oldWb ? oldWb.SheetNames : [];
+  const newSheets = newWb ? newWb.SheetNames : [];
+  const allSheetNames = Array.from(new Set([...oldSheets, ...newSheets]));
+
+  const sheets = [];
+
+  for (const sheetName of allSheetNames) {
+    let oldCsv = '';
+    let newCsv = '';
+    if (oldWb) {
+      try {
+        oldCsv = xlsxSheetToCsv(oldWb, sheetName, options);
+      } catch (e) {
+        // Ignored
+      }
+    }
+    if (newWb) {
+      try {
+        newCsv = xlsxSheetToCsv(newWb, sheetName, options);
+      } catch (e) {
+        // Ignored
+      }
+    }
+
+    const hasDiff = oldCsv !== newCsv;
+    let htmlUrl = '';
+    let sbsUrl = '';
+
+    if (hasDiff) {
+      const prefix = crypto.randomBytes(12).toString('hex');
+      const htmlPath = path.join(SESSION_TMP, `${prefix}.html`);
+      const sbsHtmlPath = path.join(SESSION_TMP, `${prefix}.sbs.html`);
+
+      const htmlContent = csvDiffToHtml(oldCsv, newCsv);
+      const sbsHtmlContent = csvDiffToHtmlSideBySide(oldCsv, newCsv);
+
+      await fsp.mkdir(path.dirname(htmlPath), { recursive: true });
+      await fsp.writeFile(htmlPath, htmlContent);
+      await fsp.writeFile(sbsHtmlPath, sbsHtmlContent);
+
+      const id = createDiffRecord(htmlPath, sbsHtmlPath);
+      htmlUrl = `/diff/${id}?token=${TOKEN}`;
+      sbsUrl = `/diff/${id}/sbs?token=${TOKEN}`;
+    }
+
+    sheets.push({
+      name: sheetName,
+      hasDiff,
+      htmlUrl,
+      sbsUrl
+    });
+  }
+
+  return {
+    sheets
+  };
+}
+
 async function fileExists(file) {
   try {
     await fsp.access(file, fs.constants.R_OK);
@@ -688,6 +812,10 @@ async function route(req, res) {
       const { path: selectedPath, supported } = await openFolderDialog();
       return json(res, 200, { path: selectedPath, supported });
     }
+    if (req.method === 'POST' && url.pathname === '/api/open-file-dialog') {
+      const { path: selectedPath, supported } = await openFileDialog();
+      return json(res, 200, { path: selectedPath, supported });
+    }
     if (req.method === 'POST' && url.pathname === '/api/root') {
       const body = await readJson(req);
       const newPath = body.path;
@@ -728,6 +856,9 @@ async function route(req, res) {
     }
     if (req.method === 'POST' && url.pathname === '/api/diff/files') {
       return json(res, 200, await diffFiles(req));
+    }
+    if (req.method === 'POST' && url.pathname === '/api/diff/local') {
+      return json(res, 200, await diffLocal(req));
     }
     if (req.method === 'POST' && url.pathname === '/api/diff/external') {
       return json(res, 200, await diffExternal(req));

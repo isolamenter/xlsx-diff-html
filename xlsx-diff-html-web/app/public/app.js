@@ -29,6 +29,11 @@ const el = {
   diffMeta: document.querySelector('#diffMeta'),
   sheetList: document.querySelector('#sheetList'),
   message: document.querySelector('#message'),
+  localFileOld: document.querySelector('#localFileOld'),
+  pickLocalFileOld: document.querySelector('#pickLocalFileOld'),
+  localFileNew: document.querySelector('#localFileNew'),
+  pickLocalFileNew: document.querySelector('#pickLocalFileNew'),
+  runLocalDiff: document.querySelector('#runLocalDiff'),
 };
 
 const i18n = {
@@ -52,7 +57,7 @@ const i18n = {
     changedXlsx: 'Changed xlsx',
     noRepoSelected: 'No repo selected',
     selectRepoThenLoad: 'Select a repo, then load changed files.',
-    diff: 'Diff',
+    diff: 'Sheet Diff',
     noDiffGenerated: 'No diff generated',
     open: 'Open',
     openDir: 'Open',
@@ -72,6 +77,11 @@ const i18n = {
     dualPage: 'Side-by-side',
     noDiff: 'No Diff',
     hasDiff: 'Changed',
+    localDiff: 'Local Diff',
+    localDiffDesc: 'Compare two local xlsx files',
+    selectFileOld: 'Select file A (old)',
+    selectFileNew: 'Select file B (new)',
+    browse: 'Browse',
   },
   zh: {
     language: '语言',
@@ -93,7 +103,7 @@ const i18n = {
     changedXlsx: '变更的 xlsx',
     noRepoSelected: '未选择仓库',
     selectRepoThenLoad: '先选择仓库，然后加载变更文件。',
-    diff: '差异',
+    diff: 'sheet差异',
     noDiffGenerated: '尚未生成差异',
     open: '打开',
     openDir: '打开',
@@ -113,6 +123,11 @@ const i18n = {
     dualPage: '双页',
     noDiff: '无差异',
     hasDiff: '有差异',
+    localDiff: '本地对比',
+    localDiffDesc: '对比本地两个 xlsx 文件',
+    selectFileOld: '选择文件 A（旧）',
+    selectFileNew: '选择文件 B（新）',
+    browse: '浏览',
   },
 };
 
@@ -443,6 +458,45 @@ function showError(error) {
   setMessage(error.message || String(error), true);
 }
 
+async function pickLocalFile(inputEl) {
+  setMessage('');
+  const result = await api('/api/open-file-dialog', { method: 'POST' });
+  if (result.path) {
+    inputEl.value = result.path;
+  }
+}
+
+async function runLocalDiff() {
+  const oldFile = el.localFileOld.value;
+  const newFile = el.localFileNew.value;
+  if (!oldFile || !newFile) {
+    setMessage(state.lang === 'zh' ? '请先选择两个本地文件。' : 'Please select both local files first.', true);
+    return;
+  }
+
+  setMessage(t('generatingDiff'));
+  try {
+    const result = await api('/api/diff/local', {
+      method: 'POST',
+      body: JSON.stringify({
+        oldFile,
+        newFile,
+        ...diffOptions(),
+      }),
+    });
+    
+    showDiff(result, `${getFileName(oldFile)} vs ${getFileName(newFile)}`);
+  } catch (err) {
+    showError(err);
+  }
+}
+
+function getFileName(filePath) {
+  if (!filePath) return '';
+  const parts = filePath.split(/[/\\]/);
+  return parts[parts.length - 1];
+}
+
 el.changeRoot.addEventListener('click', () => pickRootFolder().catch(showError));
 el.refreshTree.addEventListener('click', () => openDir(state.currentPath).catch(showError));
 el.upDir.addEventListener('click', () => openDir(el.upDir.dataset.path || '').catch(showError));
@@ -459,6 +513,9 @@ el.language.addEventListener('change', () => {
   openDir(state.currentPath).catch(showError);
   if (state.repo) loadStatus().catch(showError);
 });
+el.pickLocalFileOld.addEventListener('click', () => pickLocalFile(el.localFileOld).catch(showError));
+el.pickLocalFileNew.addEventListener('click', () => pickLocalFile(el.localFileNew).catch(showError));
+el.runLocalDiff.addEventListener('click', () => runLocalDiff());
 
 applyLanguage();
 
