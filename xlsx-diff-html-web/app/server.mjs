@@ -476,8 +476,11 @@ async function diffGit(req) {
       const htmlPath = path.join(SESSION_TMP, `${prefix}.html`);
       const sbsHtmlPath = path.join(SESSION_TMP, `${prefix}.sbs.html`);
 
-      const htmlContent = csvDiffToHtml(oldCsv, newCsv);
-      const sbsHtmlContent = csvDiffToHtmlSideBySide(oldCsv, newCsv);
+      const beforeLabel = `HEAD:${file}`;
+      const afterLabel = mode === 'staged' ? `Index:${file}` : file;
+
+      const htmlContent = csvDiffToHtml(oldCsv, newCsv, beforeLabel, afterLabel, sheetName);
+      const sbsHtmlContent = csvDiffToHtmlSideBySide(oldCsv, newCsv, beforeLabel, afterLabel, sheetName);
 
       await fsp.mkdir(path.dirname(htmlPath), { recursive: true });
       await fsp.writeFile(htmlPath, htmlContent);
@@ -530,9 +533,13 @@ async function diffFiles(req) {
   }
 
   const noTableDiff = oldCsv === newCsv;
-  const html = csvDiffToHtml(oldCsv, newCsv);
+  const beforeLabel = relFromRoot(oldFile);
+  const afterLabel = relFromRoot(newFile);
+  const sheetLabel = options.sheetMode === 'all' ? 'all' : String(options.sheet ?? 1);
+
+  const html = csvDiffToHtml(oldCsv, newCsv, beforeLabel, afterLabel, sheetLabel);
   await fsp.writeFile(htmlPath, html);
-  await fsp.writeFile(sbsHtmlPath, csvDiffToHtmlSideBySide(oldCsv, newCsv));
+  await fsp.writeFile(sbsHtmlPath, csvDiffToHtmlSideBySide(oldCsv, newCsv, beforeLabel, afterLabel, sheetLabel));
 
   const id = createDiffRecord(htmlPath, sbsHtmlPath);
   const stdout = [
@@ -623,8 +630,8 @@ async function diffLocal(req) {
       const htmlPath = path.join(SESSION_TMP, `${prefix}.html`);
       const sbsHtmlPath = path.join(SESSION_TMP, `${prefix}.sbs.html`);
 
-      const htmlContent = csvDiffToHtml(oldCsv, newCsv);
-      const sbsHtmlContent = csvDiffToHtmlSideBySide(oldCsv, newCsv);
+      const htmlContent = csvDiffToHtml(oldCsv, newCsv, oldFile, newFile, sheetName);
+      const sbsHtmlContent = csvDiffToHtmlSideBySide(oldCsv, newCsv, oldFile, newFile, sheetName);
 
       await fsp.mkdir(path.dirname(htmlPath), { recursive: true });
       await fsp.writeFile(htmlPath, htmlContent);
@@ -826,11 +833,14 @@ async function runStartupDiff(localPath, remotePath, port) {
   const oldCsv = xlsxBufferToCsv(oldBuffer, options);
   const newCsv = xlsxBufferToCsv(newBuffer, options);
 
-  const html = csvDiffToHtml(oldCsv, newCsv);
+  const beforeLabel = relFromRoot(localPath);
+  const afterLabel = relFromRoot(remotePath);
+
+  const html = csvDiffToHtml(oldCsv, newCsv, beforeLabel, afterLabel, 'all');
   const htmlPath = path.join(SESSION_TMP, 'startup.html');
   await fsp.writeFile(htmlPath, html);
 
-  const sbsHtml = csvDiffToHtmlSideBySide(oldCsv, newCsv);
+  const sbsHtml = csvDiffToHtmlSideBySide(oldCsv, newCsv, beforeLabel, afterLabel, 'all');
   const sbsHtmlPath = path.join(SESSION_TMP, 'startup.sbs.html');
   await fsp.writeFile(sbsHtmlPath, sbsHtml);
 

@@ -153,11 +153,10 @@ if (compareMode) {
   }
 
   const noTableDiff = oldCsv === newCsv;
-  const sbsHtml = csvDiffToHtmlSideBySide(oldCsv, newCsv);
+  const sheetLabel = options.sheetMode === 'all' ? 'all' : String(options.sheet ?? 1);
+  const sbsHtml = csvDiffToHtmlSideBySide(oldCsv, newCsv, localFile, remoteFile, sheetLabel);
   await fsp.mkdir(path.dirname(sbsHtmlPath), { recursive: true });
   await fsp.writeFile(sbsHtmlPath, sbsHtml);
-
-  const sheetLabel = options.sheetMode === 'all' ? 'all' : String(options.sheet ?? 1);
   process.stdout.write([
     `Comparing: ${localAbs}  vs  ${remoteAbs}`,
     `Sheet: ${sheetLabel}`,
