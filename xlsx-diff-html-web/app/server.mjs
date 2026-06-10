@@ -6,8 +6,10 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { runDiff, xlsxBufferToCsv } from '../../lib/engine.mjs';
+import { runDiff, xlsxBufferToCsv, xlsxSheetToCsv } from '../../lib/engine.mjs';
 import { csvDiffToHtml, csvDiffToHtmlSideBySide } from '../../lib/daff.mjs';
+import { spawnGit } from '../../lib/git.mjs';
+import * as XLSX from 'xlsx';
 
 const __filename = fileURLToPath(import.meta.url);
 const APP_DIR = path.dirname(__filename);
@@ -426,25 +428,96 @@ async function diffGit(req) {
   const repoReal = await validateRepoRoot(body.repo || '');
   const file = await validateRepoFile(repoReal, body.file || '');
   const options = readDiffOptions(body);
-  const prefix = crypto.randomBytes(12).toString('hex');
-  const htmlPath = path.join(SESSION_TMP, `${prefix}.html`);
-  const sbsHtmlPath = path.join(SESSION_TMP, `${prefix}.sbs.html`);
 
-  let result;
-  try {
-    result = await runDiff({ repoRoot: repoReal, file, mode, options, htmlPath, sbsHtmlPath });
-  } catch (err) {
-    throw httpError(500, `xlsx diff failed: ${err.message}`);
+  // Get old xlsx from HEAD
+  const headResult = await spawnGit(['show', `HEAD:${file}`], repoReal);
+  const oldBuffer = headResult.code === 0 ? headResult.stdout : Buffer.alloc(0);
+
+  // Get new xlsx from working tree or staged index
+  let newBuffer;
+  if (mode === 'staged') {
+    const indexResult = await spawnGit(['show', `:${file}`], repoReal);
+    newBuffer = indexResult.code === 0 ? indexResult.stdout : Buffer.alloc(0);
+  } else {
+    try {
+      newBuffer = await fsp.readFile(path.join(repoReal, file));
+    } catch {
+      newBuffer = Buffer.alloc(0);
+    }
   }
 
-  const id = createDiffRecord(htmlPath, sbsHtmlPath);
+  let oldWb = null;
+  let newWb = null;
+  if (oldBuffer.length) {
+    try {
+      oldWb = XLSX.read(oldBuffer, { type: 'buffer', cellDates: true, cellNF: true, cellStyles: true });
+    } catch (e) {
+      // Ignored or handled
+    }
+  }
+  if (newBuffer.length) {
+    try {
+      newWb = XLSX.read(newBuffer, { type: 'buffer', cellDates: true, cellNF: true, cellStyles: true });
+    } catch (e) {
+      // Ignored or handled
+    }
+  }
+
+  const oldSheets = oldWb ? oldWb.SheetNames : [];
+  const newSheets = newWb ? newWb.SheetNames : [];
+  const allSheetNames = Array.from(new Set([...oldSheets, ...newSheets]));
+
+  const sheets = [];
+
+  for (const sheetName of allSheetNames) {
+    let oldCsv = '';
+    let newCsv = '';
+    if (oldWb) {
+      try {
+        oldCsv = xlsxSheetToCsv(oldWb, sheetName, options);
+      } catch (e) {
+        // Ignored, empty CSV fallback
+      }
+    }
+    if (newWb) {
+      try {
+        newCsv = xlsxSheetToCsv(newWb, sheetName, options);
+      } catch (e) {
+        // Ignored, empty CSV fallback
+      }
+    }
+
+    const hasDiff = oldCsv !== newCsv;
+    let htmlUrl = '';
+    let sbsUrl = '';
+
+    if (hasDiff) {
+      const prefix = crypto.randomBytes(12).toString('hex');
+      const htmlPath = path.join(SESSION_TMP, `${prefix}.html`);
+      const sbsHtmlPath = path.join(SESSION_TMP, `${prefix}.sbs.html`);
+
+      const htmlContent = csvDiffToHtml(oldCsv, newCsv);
+      const sbsHtmlContent = csvDiffToHtmlSideBySide(oldCsv, newCsv);
+
+      await fsp.mkdir(path.dirname(htmlPath), { recursive: true });
+      await fsp.writeFile(htmlPath, htmlContent);
+      await fsp.writeFile(sbsHtmlPath, sbsHtmlContent);
+
+      const id = createDiffRecord(htmlPath, sbsHtmlPath);
+      htmlUrl = `/diff/${id}?token=${TOKEN}`;
+      sbsUrl = `/diff/${id}/sbs?token=${TOKEN}`;
+    }
+
+    sheets.push({
+      name: sheetName,
+      hasDiff,
+      htmlUrl,
+      sbsUrl
+    });
+  }
+
   return {
-    id,
-    htmlUrl: `/diff/${id}?token=${TOKEN}`,
-    sbsUrl: `/diff/${id}/sbs?token=${TOKEN}`,
-    noTableDiff: result.noTableDiff,
-    stdout: result.stdout,
-    stderr: result.stderr,
+    sheets
   };
 }
 

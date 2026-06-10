@@ -60,11 +60,11 @@
             <button id="loadStatus" type="button" data-i18n="load">Load</button>
           </div>
           <div class="control-row compact">
-            <label class="inline">
+            <label class="inline" style="display: none;">
               <input id="allSheets" type="checkbox" checked>
               <span data-i18n="allSheets">All sheets</span>
             </label>
-            <label>
+            <label style="display: none;">
               <span data-i18n="sheet">Sheet</span>
               <input id="sheet" type="number" min="1" value="1">
             </label>
@@ -99,10 +99,9 @@
               <h2 data-i18n="diff">Diff</h2>
               <div id="diffMeta" class="muted">No diff generated</div>
             </div>
-            <a id="openDiff" class="button-link disabled" href="#" target="_blank" rel="noreferrer" data-i18n="open">Open</a>
           </div>
           <div id="message" class="message" hidden></div>
-          <iframe id="diffFrame" title="xlsx diff output"></iframe>
+          <div id="sheetList" class="sheet-list empty"></div>
         </section>
       </section>
     </main>
