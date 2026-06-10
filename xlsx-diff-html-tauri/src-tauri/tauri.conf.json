@@ -20,6 +20,9 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
+    "macOS": {
+      "signingIdentity": "-"
+    },
     "externalBin": ["binaries/server"],
     "resources": {
       "../../xlsx-diff-html-web/app/public/**/*": "public/"
