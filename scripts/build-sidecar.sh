@@ -34,14 +34,20 @@ node --experimental-sea-config dist/sea-config.json
 
 # 4. Copy node binary and inject the blob
 echo "==> Injecting blob into node binary..."
-cp "$(which node)" dist/server-sea
+NODE_BIN="$(which node)"
+cp "$NODE_BIN" dist/server-sea
 node_modules/.bin/postject dist/server-sea NODE_SEA_BLOB dist/sea-prep.blob \
   --sentinel-fuse NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2 \
   --macho-segment-name NODE_SEA
 
 # 5. Ad-hoc code-sign (macOS requires a valid signature after binary modification)
 echo "==> Signing binary..."
-codesign --sign - dist/server-sea
+ENTITLEMENTS_FILE="dist/node-entitlements.plist"
+if codesign -d --entitlements :- "$NODE_BIN" > "$ENTITLEMENTS_FILE" 2>/dev/null && [ -s "$ENTITLEMENTS_FILE" ]; then
+  codesign --force --sign - --entitlements "$ENTITLEMENTS_FILE" dist/server-sea
+else
+  codesign --force --sign - dist/server-sea
+fi
 
 # 6. Install into Tauri binaries directory
 cp dist/server-sea "${BINARIES_DIR}/server-${TRIPLE}"

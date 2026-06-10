@@ -21,7 +21,8 @@
       "icons/icon.ico"
     ],
     "macOS": {
-      "signingIdentity": "-"
+      "signingIdentity": "-",
+      "entitlements": "Entitlements.plist"
     },
     "externalBin": ["binaries/server"],
     "resources": {
