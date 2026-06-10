@@ -15,13 +15,20 @@
   box-sizing: border-box;
 }
 
+html,
 body {
+  height: 100%;
   margin: 0;
-  min-height: 100vh;
+  overflow: hidden;
+}
+
+body {
   background: var(--bg);
   color: var(--text);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   font-size: 14px;
+  display: flex;
+  flex-direction: column;
 }
 
 button,
@@ -30,8 +37,7 @@ select {
   font: inherit;
 }
 
-button,
-.button-link {
+button {
   min-height: 32px;
   border: 1px solid var(--line);
   border-radius: 6px;
@@ -43,13 +49,11 @@ button,
   white-space: nowrap;
 }
 
-button:hover,
-.button-link:hover {
+button:hover {
   border-color: var(--accent);
 }
 
-button:disabled,
-.button-link.disabled {
+button:disabled {
   opacity: 0.45;
   pointer-events: none;
 }
@@ -123,19 +127,6 @@ label {
   word-break: break-all;
 }
 
-.root-edit-row {
-  display: grid;
-  grid-template-columns: 1fr auto auto;
-  gap: 6px;
-  margin-top: 4px;
-  max-width: 500px;
-}
-
-.root-edit-row input {
-  min-height: 28px;
-  padding: 3px 7px;
-}
-
 .small {
   min-height: 24px;
   padding: 2px 8px;
@@ -163,18 +154,22 @@ label {
 }
 
 .shell {
+  flex: 1;
+  min-height: 0;
   display: grid;
   grid-template-columns: minmax(260px, 340px) 1fr;
   gap: 12px;
   padding: 12px;
-  min-height: calc(100vh - 64px);
+  overflow: hidden;
 }
 
 .workspace {
   display: grid;
-  grid-template-rows: auto auto minmax(360px, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr);
   gap: 12px;
   min-width: 0;
+  height: 100%;
+  overflow: hidden;
 }
 
 .panel {
@@ -195,19 +190,19 @@ label {
 
 .panel-head > div {
   min-width: 0;
-  overflow: hidden;
+  flex: 1;
 }
 
 .panel-head > div .muted {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  word-break: break-all;
+  white-space: normal;
 }
 
 .sidebar {
   min-height: 0;
   display: grid;
   grid-template-rows: auto auto 1fr;
+  overflow: hidden;
 }
 
 .path-actions {
@@ -219,6 +214,7 @@ label {
 }
 
 .tree {
+  min-height: 0;
   overflow: auto;
   padding: 8px;
 }
@@ -243,18 +239,6 @@ label {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.badge {
-  display: inline-flex;
-  align-items: center;
-  min-height: 22px;
-  border-radius: 999px;
-  padding: 2px 7px;
-  background: #e8f2ee;
-  color: var(--accent);
-  font-size: 12px;
-  font-weight: 700;
 }
 
 .controls {
@@ -318,10 +302,20 @@ label {
   padding: 12px;
 }
 
+.file-picker-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.file-picker-row input {
+  flex: 1;
+}
+
 .result-panel {
   min-height: 0;
   display: grid;
-  grid-template-rows: auto auto minmax(240px, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr);
 }
 
 .message {
@@ -334,12 +328,86 @@ label {
   white-space: pre-wrap;
 }
 
-iframe {
-  width: 100%;
-  height: 100%;
-  min-height: 320px;
-  border: 0;
-  background: #fff;
+.sheet-list {
+  padding: 12px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+}
+
+.sheet-list.empty {
+  color: var(--muted);
+  padding: 16px;
+}
+
+.sheet-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto auto;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  background: #fcfdfb;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  transition: background-color 0.15s ease;
+}
+
+.sheet-row:hover {
+  background-color: #f6f8f4;
+}
+
+.sheet-name {
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 4px 10px;
+  border-radius: 999px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  white-space: nowrap;
+}
+
+.status-badge.has-diff {
+  background-color: #fde8e8;
+  color: var(--danger);
+  border: 1px solid #fbd5d5;
+}
+
+.status-badge.no-diff {
+  background-color: #eaf6f0;
+  color: var(--accent);
+  border: 1px solid #def0e7;
+}
+
+.sheet-btn {
+  min-height: 28px;
+  padding: 4px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  border-radius: 6px;
+}
+
+.sheet-btn.primary {
+  background-color: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+
+.sheet-btn.primary:hover {
+  background-color: #125447;
+  border-color: #125447;
 }
 
 .status {
@@ -367,5 +435,44 @@ iframe {
 
   .topbar-actions {
     align-items: flex-end;
+  }
+
+  html,
+  body {
+    height: auto;
+    overflow: auto;
+  }
+
+  body {
+    display: block;
+  }
+
+  .shell {
+    height: auto;
+    overflow: visible;
+  }
+
+  .sidebar {
+    height: auto;
+    overflow: visible;
+  }
+
+  .tree {
+    overflow: visible;
+  }
+
+  .workspace {
+    height: auto;
+    overflow: visible;
+    grid-template-rows: auto auto auto;
+  }
+
+  .result-panel {
+    grid-template-rows: auto auto auto;
+  }
+
+  .sheet-list {
+    overflow-y: visible;
+    min-height: 0;
   }
 }

@@ -60,11 +60,11 @@
             <button id="loadStatus" type="button" data-i18n="load">Load</button>
           </div>
           <div class="control-row compact">
-            <label class="inline">
+            <label class="inline" style="display: none;">
               <input id="allSheets" type="checkbox" checked>
               <span data-i18n="allSheets">All sheets</span>
             </label>
-            <label>
+            <label style="display: none;">
               <span data-i18n="sheet">Sheet</span>
               <input id="sheet" type="number" min="1" value="1">
             </label>
@@ -90,7 +90,25 @@
             <div id="changedFiles" class="list empty">Select a repo, then load changed files.</div>
           </div>
 
-
+          <div>
+            <div class="panel-head">
+              <div>
+                <h2 data-i18n="localDiff">Local Diff</h2>
+                <div class="muted" data-i18n="localDiffDesc">Compare two local xlsx files</div>
+              </div>
+            </div>
+            <div class="file-pair">
+              <div class="file-picker-row">
+                <input id="localFileOld" type="text" readonly placeholder="Select file A (old)" data-i18n-placeholder="selectFileOld">
+                <button id="pickLocalFileOld" type="button" class="small" data-i18n="browse">Browse</button>
+              </div>
+              <div class="file-picker-row">
+                <input id="localFileNew" type="text" readonly placeholder="Select file B (new)" data-i18n-placeholder="selectFileNew">
+                <button id="pickLocalFileNew" type="button" class="small" data-i18n="browse">Browse</button>
+              </div>
+              <button id="runLocalDiff" type="button" data-i18n="diffButton" style="margin-top: 8px;">Diff</button>
+            </div>
+          </div>
         </section>
 
         <section class="panel result-panel">
@@ -99,10 +117,9 @@
               <h2 data-i18n="diff">Diff</h2>
               <div id="diffMeta" class="muted">No diff generated</div>
             </div>
-            <a id="openDiff" class="button-link disabled" href="#" target="_blank" rel="noreferrer" data-i18n="open">Open</a>
           </div>
           <div id="message" class="message" hidden></div>
-          <iframe id="diffFrame" title="xlsx diff output"></iframe>
+          <div id="sheetList" class="sheet-list empty"></div>
         </section>
       </section>
     </main>

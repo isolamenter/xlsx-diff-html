@@ -27,9 +27,13 @@ const el = {
   statusMeta: document.querySelector('#statusMeta'),
   changedFiles: document.querySelector('#changedFiles'),
   diffMeta: document.querySelector('#diffMeta'),
-  openDiff: document.querySelector('#openDiff'),
-  diffFrame: document.querySelector('#diffFrame'),
+  sheetList: document.querySelector('#sheetList'),
   message: document.querySelector('#message'),
+  localFileOld: document.querySelector('#localFileOld'),
+  pickLocalFileOld: document.querySelector('#pickLocalFileOld'),
+  localFileNew: document.querySelector('#localFileNew'),
+  pickLocalFileNew: document.querySelector('#pickLocalFileNew'),
+  runLocalDiff: document.querySelector('#runLocalDiff'),
 };
 
 const i18n = {
@@ -53,9 +57,8 @@ const i18n = {
     changedXlsx: 'Changed xlsx',
     noRepoSelected: 'No repo selected',
     selectRepoThenLoad: 'Select a repo, then load changed files.',
-    diff: 'Diff',
+    diff: 'Sheet Diff',
     noDiffGenerated: 'No diff generated',
-    open: 'Open',
     openDir: 'Open',
     noEntries: 'No directories or xlsx files.',
     repoSelected: 'Repo selected',
@@ -68,7 +71,15 @@ const i18n = {
     noTableDiff: 'No table diff.',
     missingToken: 'Missing launch token. Start this page from XlsxDiffHtml.app.',
     changeRoot: 'Change',
-    rootChangeFailed: 'Failed to change root',
+    singlePage: 'Single Page',
+    dualPage: 'Side-by-side',
+    noDiff: 'No Diff',
+    hasDiff: 'Changed',
+    localDiff: 'Local Diff',
+    localDiffDesc: 'Compare two local xlsx files',
+    selectFileOld: 'Select file A (old)',
+    selectFileNew: 'Select file B (new)',
+    browse: 'Browse',
   },
   zh: {
     language: '语言',
@@ -90,22 +101,29 @@ const i18n = {
     changedXlsx: '变更的 xlsx',
     noRepoSelected: '未选择仓库',
     selectRepoThenLoad: '先选择仓库，然后加载变更文件。',
-    diff: '差异',
+    diff: 'sheet差异',
     noDiffGenerated: '尚未生成差异',
-    open: '打开',
     openDir: '打开',
     noEntries: '没有目录或 xlsx 文件。',
     repoSelected: '已选择仓库',
     selectRepoFirst: '请先选择一个仓库目录。',
     loading: '加载中...',
-    changedCount: (count, mode) => `${count} 个变更的 xlsx 文件 - ${mode === 'staged' ? '暂存区' : '工作区'}`,
+    changedCount: (count, mode) => `${count} 个变更 of xlsx 文件 - ${mode === 'staged' ? '暂存区' : '工作区'}`,
     noChangedFiles: '没有变更的 xlsx 文件。',
     diffButton: '差异',
     generatingDiff: '正在生成差异...',
     noTableDiff: '表格内容无差异。',
     missingToken: '缺少启动 token。请从 XlsxDiffHtml.app 启动页面。',
     changeRoot: '更改',
-    rootChangeFailed: '更改根目录失败',
+    singlePage: '单页',
+    dualPage: '双页',
+    noDiff: '无差异',
+    hasDiff: '有差异',
+    localDiff: '本地对比',
+    localDiffDesc: '对比本地两个 xlsx 文件',
+    selectFileOld: '选择文件 A（旧）',
+    selectFileNew: '选择文件 B（新）',
+    browse: '浏览',
   },
 };
 
@@ -138,7 +156,7 @@ function applyLanguage() {
   if (!state.rootLoaded) {
     el.rootPath.textContent = t('loadingRoot');
   }
-  if (!el.diffFrame.getAttribute('src')) {
+  if (el.sheetList.classList.contains('empty')) {
     el.diffMeta.textContent = t('noDiffGenerated');
   }
 }
@@ -195,6 +213,7 @@ async function loadRoot() {
   state.rootLoaded = true;
   state.isTauri = !!root.isTauri;
   el.rootPath.textContent = root.rootDisplayPath;
+  el.rootPath.title = root.rootDisplayPath;
   el.runtimeInfo.textContent = `${root.platform} ${root.arch}`;
   if (root.lang === 'en' || root.lang === 'zh') {
     state.lang = root.lang;
@@ -210,6 +229,7 @@ async function applyNewRoot(newPath) {
     body: JSON.stringify({ path: newPath }),
   });
   el.rootPath.textContent = result.rootDisplayPath;
+  el.rootPath.title = result.rootDisplayPath;
   state.currentPath = '';
   state.currentHasGit = false;
   state.repo = '';
@@ -233,6 +253,7 @@ async function openDir(path) {
   state.currentPath = data.path;
   state.currentHasGit = data.hasGit;
   el.currentPath.textContent = data.path || '.';
+  el.currentPath.title = data.path || '.';
   el.upDir.disabled = data.parent === null;
   el.upDir.dataset.path = data.parent || '';
   el.useCurrentRepo.disabled = !data.hasGit;
@@ -249,6 +270,7 @@ function renderTree(data) {
     const name = document.createElement('div');
     name.className = 'name';
     name.textContent = dir.name;
+    name.title = dir.name;
     const open = document.createElement('button');
     open.type = 'button';
     open.textContent = t('openDir');
@@ -275,6 +297,7 @@ function renderTree(data) {
     const name = document.createElement('div');
     name.className = 'name';
     name.textContent = file.name;
+    name.title = file.name;
     row.append(name);
     rows.push(row);
   }
@@ -352,23 +375,124 @@ async function runGitDiff(file) {
   showDiff(result, file);
 }
 
+function openUrl(url, event) {
+  if (event) {
+    event.preventDefault();
+  }
+  if (!state.isTauri) {
+    window.open(url, '_blank', 'noreferrer');
+    return;
+  }
+  let targetUrl = url;
+  if (url.startsWith('/')) {
+    targetUrl = `${window.location.origin}${url}`;
+  }
+  api('/api/open-url', { method: 'POST', body: JSON.stringify({ url: targetUrl }) }).catch(showError);
+}
+
 function showDiff(result, label) {
-  setMessage(result.noTableDiff ? t('noTableDiff') : '');
+  setMessage('');
   el.diffMeta.textContent = label;
-  el.diffFrame.src = result.htmlUrl;
-  el.openDiff.href = result.sbsUrl || result.htmlUrl;
-  el.openDiff.classList.remove('disabled');
+  renderSheetList(result.sheets);
+}
+
+function renderSheetList(sheets) {
+  el.sheetList.textContent = '';
+  el.sheetList.classList.remove('empty');
+
+  if (!sheets || sheets.length === 0) {
+    el.sheetList.classList.add('empty');
+    el.sheetList.textContent = t('noTableDiff');
+    return;
+  }
+
+  const hasAnyDiff = sheets.some(s => s.hasDiff);
+  if (!hasAnyDiff) {
+    setMessage(t('noTableDiff'));
+  }
+
+  for (const sheet of sheets) {
+    const row = document.createElement('div');
+    row.className = 'sheet-row';
+
+    const name = document.createElement('div');
+    name.className = 'sheet-name';
+    name.textContent = sheet.name;
+    name.title = sheet.name;
+
+    const badge = document.createElement('span');
+    badge.className = `status-badge ${sheet.hasDiff ? 'has-diff' : 'no-diff'}`;
+    badge.textContent = sheet.hasDiff ? t('hasDiff') : t('noDiff');
+
+    row.append(name, badge);
+
+    if (sheet.hasDiff) {
+      const singleBtn = document.createElement('button');
+      singleBtn.type = 'button';
+      singleBtn.className = 'sheet-btn';
+      singleBtn.textContent = t('singlePage');
+      singleBtn.addEventListener('click', (e) => openUrl(sheet.htmlUrl, e));
+
+      const dualBtn = document.createElement('button');
+      dualBtn.type = 'button';
+      dualBtn.className = 'sheet-btn primary';
+      dualBtn.textContent = t('dualPage');
+      dualBtn.addEventListener('click', (e) => openUrl(sheet.sbsUrl, e));
+
+      row.append(singleBtn, dualBtn);
+    } else {
+      const spacer1 = document.createElement('div');
+      const spacer2 = document.createElement('div');
+      row.append(spacer1, spacer2);
+    }
+
+    el.sheetList.append(row);
+  }
 }
 
 function showError(error) {
   setMessage(error.message || String(error), true);
 }
 
-el.openDiff.addEventListener('click', e => {
-  if (!state.isTauri) return;
-  e.preventDefault();
-  api('/api/open-url', { method: 'POST', body: JSON.stringify({ url: el.openDiff.href }) }).catch(showError);
-});
+async function pickLocalFile(inputEl) {
+  setMessage('');
+  const result = await api('/api/open-file-dialog', { method: 'POST' });
+  if (result.path) {
+    inputEl.value = result.path;
+  }
+}
+
+async function runLocalDiff() {
+  const oldFile = el.localFileOld.value;
+  const newFile = el.localFileNew.value;
+  if (!oldFile || !newFile) {
+    setMessage(state.lang === 'zh' ? '请先选择两个本地文件。' : 'Please select both local files first.', true);
+    return;
+  }
+
+  setMessage(t('generatingDiff'));
+  try {
+    const result = await api('/api/diff/local', {
+      method: 'POST',
+      body: JSON.stringify({
+        oldFile,
+        newFile,
+        ...diffOptions(),
+      }),
+    });
+    
+    showDiff(result, `${getFileName(oldFile)} vs ${getFileName(newFile)}`);
+  } catch (err) {
+    showError(err);
+  }
+}
+
+function getFileName(filePath) {
+  if (!filePath) return '';
+  const parts = filePath.split(/[/\\]/);
+  return parts[parts.length - 1];
+}
+
 el.changeRoot.addEventListener('click', () => pickRootFolder().catch(showError));
 el.refreshTree.addEventListener('click', () => openDir(state.currentPath).catch(showError));
 el.upDir.addEventListener('click', () => openDir(el.upDir.dataset.path || '').catch(showError));
@@ -385,6 +509,9 @@ el.language.addEventListener('change', () => {
   openDir(state.currentPath).catch(showError);
   if (state.repo) loadStatus().catch(showError);
 });
+el.pickLocalFileOld.addEventListener('click', () => pickLocalFile(el.localFileOld).catch(showError));
+el.pickLocalFileNew.addEventListener('click', () => pickLocalFile(el.localFileNew).catch(showError));
+el.runLocalDiff.addEventListener('click', () => runLocalDiff());
 
 applyLanguage();
 
