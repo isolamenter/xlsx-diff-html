@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { runDiff, runDiffFiles, normalizeFilePath, collectChangedXlsx, xlsxBufferToCsv } from './lib/engine.mjs';
+import { runDiff, normalizeFilePath, collectChangedXlsx, xlsxBufferToCsv } from './lib/engine.mjs';
 import { csvDiffToHtmlSideBySide } from './lib/daff.mjs';
 import { spawnGit } from './lib/git.mjs';
 import fsp from 'node:fs/promises';
@@ -15,8 +15,8 @@ function usage() {
     '  xlsx-diff-html [options] --compare LOCAL.xlsx REMOTE.xlsx\n' +
     '\n' +
     'Options:\n' +
-    '  --all                     Export every sheet; sheets are separated by a blank line.\n' +
-    '  --sheet N                 Export sheet N (1-based). Default: 1.\n' +
+    '  --all                     Export every sheet; sheets are separated by a blank line. Default.\n' +
+    '  --sheet N                 Export only sheet N (1-based).\n' +
     '  --staged                  Compare HEAD vs staged index instead of working tree.\n' +
     '  --changed                 Compare all changed .xlsx files reported by git status.\n' +
     '  --compare LOCAL REMOTE    Compare two files directly (no git). Use as external difftool:\n' +
@@ -55,36 +55,6 @@ function openBrowser(htmlPath) {
   exec(cmd, (err) => {
     if (err) warn(`failed to open browser for ${htmlPath}`);
   });
-}
-
-const SESSION_FILE = path.join(os.homedir(), '.xlsx-diff-html-session.json');
-
-async function tryRouteToServer(localAbs, remoteAbs) {
-  let session;
-  try {
-    session = JSON.parse(await fsp.readFile(SESSION_FILE, 'utf8'));
-  } catch {
-    return null;
-  }
-  if (!session?.url || !session?.token) return null;
-
-  const controller = new AbortController();
-  const tid = setTimeout(() => controller.abort(), 3000);
-  try {
-    const res = await fetch(`${session.url}/api/diff/external`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-xlsx-diff-token': session.token },
-      body: JSON.stringify({ localPath: localAbs, remotePath: remoteAbs }),
-      signal: controller.signal,
-    });
-    clearTimeout(tid);
-    if (!res.ok) return null;
-    const data = await res.json();
-    return data.sbsUrl ? `${session.url}${data.sbsUrl}` : null;
-  } catch {
-    clearTimeout(tid);
-    return null;
-  }
 }
 
 // Parse argv
@@ -161,16 +131,7 @@ if (compareMode) {
   const localAbs = path.isAbsolute(localFile) ? localFile : path.join(invocationCwd, localFile);
   const remoteAbs = path.isAbsolute(remoteFile) ? remoteFile : path.join(invocationCwd, remoteFile);
 
-  // Try routing through a running server instance (opens SBS view in browser)
-  if (autoOpen) {
-    const serverUrl = await tryRouteToServer(localAbs, remoteAbs);
-    if (serverUrl) {
-      openBrowser(serverUrl);
-      process.exit(0);
-    }
-  }
-
-  // Fallback: generate side-by-side HTML locally
+  // Generate side-by-side HTML locally
   let sbsHtmlPath;
   if (outputPath) {
     sbsHtmlPath = path.isAbsolute(outputPath) ? outputPath : path.join(invocationCwd, outputPath);

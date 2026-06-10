@@ -6,9 +6,9 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { runDiff, xlsxBufferToCsv, xlsxSheetToCsv } from '../../lib/engine.mjs';
+import { xlsxBufferToCsv, xlsxSheetToCsv } from '../../lib/engine.mjs';
 import { csvDiffToHtml, csvDiffToHtmlSideBySide } from '../../lib/daff.mjs';
-import { spawnGit } from '../../lib/git.mjs';
+import { spawnGit, parseGitStatus } from '../../lib/git.mjs';
 import * as XLSX from 'xlsx';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -18,7 +18,6 @@ const PUBLIC_DIR = process.env.XLSX_PUBLIC_DIR || path.join(APP_DIR, 'public');
 const TOKEN = process.env.XLSX_DIFF_HTML_TOKEN || crypto.randomBytes(24).toString('hex');
 const READY_FILE = process.env.XLSX_DIFF_HTML_READY_FILE || '';
 const ROOT_INPUT = process.env.XLSX_DIFF_HTML_ROOT || PACKAGE_ROOT;
-const SESSION_FILE = path.join(os.homedir(), '.xlsx-diff-html-session.json');
 let ROOT_REAL;
 let SESSION_TMP;
 const diffs = new Map(); // id → { htmlPath: string|null, sbsHtmlPath: string|null }
@@ -360,33 +359,6 @@ async function listDirectory(url) {
   };
 }
 
-function parseGitStatus(buffer, mode) {
-  const entries = buffer.toString('utf8').split('\0');
-  const files = [];
-
-  for (let index = 0; index < entries.length; index += 1) {
-    const entry = entries[index];
-    if (!entry) continue;
-    const status = entry.slice(0, 2);
-    const file = entry.slice(3);
-    if (status[0] === 'R' || status[0] === 'C') index += 1;
-    if (!isXlsxPath(file)) continue;
-
-    const staged = status[0] !== ' ' && status[0] !== '?';
-    const include = mode === 'staged' ? staged : true;
-    if (!include) continue;
-
-    files.push({
-      path: file,
-      status,
-      staged: status[0],
-      working: status[1],
-    });
-  }
-
-  return files;
-}
-
 async function repoStatus(url) {
   const mode = url.searchParams.get('mode') === 'staged' ? 'staged' : 'working';
   const repoReal = await validateRepoRoot(url.searchParams.get('repo') || '');
@@ -422,18 +394,6 @@ function readDiffOptions(body) {
     ignoreEmpty: body.ignoreEmpty === true,
     dateFormat,
   };
-}
-
-function diffArgsFromOptions(options) {
-  const args = ['--no-open'];
-  if (options.sheetMode === 'all') {
-    args.push('--all');
-  } else {
-    args.push('--sheet', String(options.sheet));
-  }
-  if (options.ignoreEmpty) args.push('--ignore-empty');
-  if (options.dateFormat) args.push('--date-format', options.dateFormat);
-  return args;
 }
 
 function createDiffRecord(htmlPath, sbsHtmlPath) {
@@ -582,42 +542,6 @@ async function diffFiles(req) {
   ].filter(Boolean).join('\n');
 
   return { id, htmlUrl: `/diff/${id}?token=${TOKEN}`, sbsUrl: `/diff/${id}/sbs?token=${TOKEN}`, noTableDiff, stdout, stderr: '' };
-}
-
-async function diffExternal(req) {
-  const body = await readJson(req);
-  const localPath = body.localPath;
-  const remotePath = body.remotePath;
-
-  // Accept any absolute paths (git provides temp files outside ROOT_REAL)
-  if (typeof localPath !== 'string' || !path.isAbsolute(localPath)) {
-    throw httpError(400, 'localPath must be an absolute path');
-  }
-  if (typeof remotePath !== 'string' || !path.isAbsolute(remotePath)) {
-    throw httpError(400, 'remotePath must be an absolute path');
-  }
-
-  const options = body.options && typeof body.options === 'object'
-    ? readDiffOptions(body.options)
-    : { sheetMode: 'all', sheet: 1, ignoreEmpty: false, dateFormat: 'yyyy-mm-dd' };
-
-  let oldBuffer, newBuffer;
-  try { oldBuffer = await fsp.readFile(localPath); } catch { oldBuffer = Buffer.alloc(0); }
-  try { newBuffer = await fsp.readFile(remotePath); } catch { newBuffer = Buffer.alloc(0); }
-
-  let oldCsv, newCsv;
-  try {
-    oldCsv = xlsxBufferToCsv(oldBuffer, options);
-    newCsv = xlsxBufferToCsv(newBuffer, options);
-  } catch (err) {
-    throw httpError(500, `xlsx2csv failed: ${err.message}`);
-  }
-
-  const sbsHtmlPath = path.join(SESSION_TMP, `${crypto.randomBytes(12).toString('hex')}.sbs.html`);
-  await fsp.writeFile(sbsHtmlPath, csvDiffToHtmlSideBySide(oldCsv, newCsv));
-
-  const id = createDiffRecord(null, sbsHtmlPath);
-  return { id, sbsUrl: `/diff/${id}/sbs?token=${TOKEN}`, noTableDiff: oldCsv === newCsv };
 }
 
 async function diffLocal(req) {
@@ -860,9 +784,6 @@ async function route(req, res) {
     if (req.method === 'POST' && url.pathname === '/api/diff/local') {
       return json(res, 200, await diffLocal(req));
     }
-    if (req.method === 'POST' && url.pathname === '/api/diff/external') {
-      return json(res, 200, await diffExternal(req));
-    }
     if (req.method === 'GET' && url.pathname.startsWith('/diff/')) {
       return serveDiff(req, res, url);
     }
@@ -954,14 +875,6 @@ async function start() {
   const url = `http://127.0.0.1:${port}${startPath}`;
   if (READY_FILE) await fsp.writeFile(READY_FILE, url);
 
-  // Write session file so CLI can route external diffs through this server
-  const serverBase = `http://127.0.0.1:${port}`;
-  try {
-    await fsp.writeFile(SESSION_FILE, JSON.stringify({ url: serverBase, token: TOKEN, pid: process.pid }));
-  } catch {
-    // non-fatal: external diff fallback will handle this
-  }
-
   console.log(`xlsx-diff-html web server listening on ${url}`);
   console.log(`root: ${ROOT_REAL}`);
 }
@@ -969,13 +882,6 @@ async function start() {
 async function shutdown() {
   server.close();
   if (SESSION_TMP) await fsp.rm(SESSION_TMP, { recursive: true, force: true }).catch(() => {});
-  // Remove session file only if it belongs to this process
-  try {
-    const data = JSON.parse(await fsp.readFile(SESSION_FILE, 'utf8'));
-    if (data?.pid === process.pid) await fsp.unlink(SESSION_FILE);
-  } catch {
-    // non-fatal
-  }
 }
 
 process.on('SIGINT', () => shutdown().finally(() => process.exit(0)));
