@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-pick-native-path"
+description = "Enables the pick_native_path command without any pre-configured scope."
+commands.allow = ["pick_native_path"]
+
+[[permission]]
+identifier = "deny-pick-native-path"
+description = "Denies the pick_native_path command without any pre-configured scope."
+commands.deny = ["pick_native_path"]

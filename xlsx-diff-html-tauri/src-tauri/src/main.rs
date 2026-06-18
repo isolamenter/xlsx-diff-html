@@ -5,9 +5,31 @@ use std::{
     time::{Duration, Instant},
 };
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_shell::{process::CommandChild, ShellExt};
 
 struct NodeProcess(Mutex<Option<CommandChild>>);
+
+#[tauri::command]
+async fn pick_native_path(app: tauri::AppHandle, kind: String) -> Result<Option<String>, String> {
+    let dialog = app.dialog().file();
+    let selected = match kind.as_str() {
+        "folder" => dialog.blocking_pick_folder(),
+        "file" => dialog
+            .add_filter("Excel Files", &["xlsx"])
+            .blocking_pick_file(),
+        _ => return Err("kind must be 'folder' or 'file'".into()),
+    };
+
+    selected
+        .map(|file_path| {
+            file_path
+                .into_path()
+                .map(|path| path.to_string_lossy().into_owned())
+                .map_err(|error| error.to_string())
+        })
+        .transpose()
+}
 
 /// Parse `--compare LOCAL REMOTE` or bare two-positional-arg form (`LOCAL REMOTE`).
 fn find_compare_files() -> Option<(String, String)> {
@@ -21,7 +43,8 @@ fn find_compare_files() -> Option<(String, String)> {
     }
 
     // Two positional (non-flag) args — what Git GUI clients pass as `$LOCAL $REMOTE`
-    let pos: Vec<&str> = args.iter()
+    let pos: Vec<&str> = args
+        .iter()
         .filter(|a| !a.starts_with('-'))
         .map(String::as_str)
         .collect();
@@ -34,6 +57,7 @@ fn find_compare_files() -> Option<(String, String)> {
 
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             if let Some(w) = app.get_webview_window("main") {
@@ -41,6 +65,7 @@ fn main() {
                 let _ = w.set_focus();
             }
         }))
+        .invoke_handler(tauri::generate_handler![pick_native_path])
         .manage(NodeProcess(Mutex::new(None)))
         .setup(|app| {
             let handle = app.handle().clone();
@@ -48,8 +73,7 @@ fn main() {
             let ready_file = std::env::temp_dir()
                 .join(format!("xlsx-diff-html-ready-{}.url", std::process::id()));
 
-            let root = dirs::home_dir()
-                .unwrap_or_else(|| std::env::current_dir().expect("cwd"));
+            let root = dirs::home_dir().unwrap_or_else(|| std::env::current_dir().expect("cwd"));
 
             let cmd = handle
                 .shell()
@@ -70,15 +94,12 @@ fn main() {
                 None => cmd,
             };
 
-            let (mut rx, child) = cmd.spawn()
-                .expect("failed to spawn server sidecar");
+            let (mut rx, child) = cmd.spawn().expect("failed to spawn server sidecar");
 
             *handle.state::<NodeProcess>().0.lock().unwrap() = Some(child);
 
             // Drain stdout/stderr so the sidecar never blocks on a full pipe
-            tauri::async_runtime::spawn(async move {
-                while rx.recv().await.is_some() {}
-            });
+            tauri::async_runtime::spawn(async move { while rx.recv().await.is_some() {} });
 
             let url = match wait_for_ready_file_sync(&ready_file, Duration::from_secs(20)) {
                 Some(u) => u,
@@ -90,18 +111,16 @@ fn main() {
 
             eprintln!("[xlsx-diff-html] server ready: {}", url.trim());
 
-            let web_url: tauri::Url = url.trim().parse()
+            let web_url: tauri::Url = url
+                .trim()
+                .parse()
                 .map_err(|e| format!("invalid server URL: {e}"))?;
 
-            let window = WebviewWindowBuilder::new(
-                app,
-                "main",
-                WebviewUrl::External(web_url),
-            )
-            .title("xlsx-diff-html")
-            .inner_size(1280.0, 820.0)
-            .min_inner_size(800.0, 600.0)
-            .build()?;
+            let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::External(web_url))
+                .title("xlsx-diff-html")
+                .inner_size(1280.0, 820.0)
+                .min_inner_size(800.0, 600.0)
+                .build()?;
 
             let handle2 = handle.clone();
             window.on_window_event(move |event| {

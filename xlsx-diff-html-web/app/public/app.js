@@ -241,10 +241,26 @@ async function applyNewRoot(newPath) {
 }
 
 async function pickRootFolder() {
-  const result = await api('/api/open-folder-dialog', { method: 'POST' });
-  if (result.path) {
-    await applyNewRoot(result.path);
+  const selectedPath = await pickNativePath('folder');
+  if (selectedPath) {
+    await applyNewRoot(selectedPath);
   }
+}
+
+async function pickNativePath(kind) {
+  if (state.isTauri) {
+    const invoke = window.__TAURI__?.core?.invoke;
+    if (!invoke) {
+      throw new Error('Tauri native API is unavailable.');
+    }
+    return invoke('pick_native_path', { kind });
+  }
+
+  const endpoint = kind === 'folder'
+    ? '/api/open-folder-dialog'
+    : '/api/open-file-dialog';
+  const result = await api(endpoint, { method: 'POST' });
+  return result.path || null;
 }
 
 async function openDir(path) {
@@ -456,9 +472,9 @@ function showError(error) {
 
 async function pickLocalFile(inputEl) {
   setMessage('');
-  const result = await api('/api/open-file-dialog', { method: 'POST' });
-  if (result.path) {
-    inputEl.value = result.path;
+  const selectedPath = await pickNativePath('file');
+  if (selectedPath) {
+    inputEl.value = selectedPath;
   }
 }
 

@@ -1,11 +1,11 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "xlsx-diff-html",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "identifier": "com.isolameto.xlsx-diff-html",
   "build": {},
   "app": {
-    "withGlobalTauri": false,
+    "withGlobalTauri": true,
     "security": {
       "csp": null
     }

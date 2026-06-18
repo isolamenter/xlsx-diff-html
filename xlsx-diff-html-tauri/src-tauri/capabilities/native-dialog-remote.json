@@ -1,0 +1,15 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "native-dialog-remote",
+  "description": "Allow the localhost UI to invoke only the native path picker.",
+  "remote": {
+    "urls": [
+      "http://127.0.0.1:*/*"
+    ]
+  },
+  "local": false,
+  "windows": ["main"],
+  "permissions": [
+    "allow-pick-native-path"
+  ]
+}
