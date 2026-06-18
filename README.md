@@ -112,6 +112,17 @@ npm run build:sidecar && cd xlsx-diff-html-tauri && npm run dev
 npm run build:sidecar:win; cd xlsx-diff-html-tauri; npm run dev
 ```
 
+When the desktop executable is configured as an external diff tool, it accepts
+exactly two positional arguments:
+
+```bash
+xlsx-diff-html "$LOCAL" "$REMOTE"
+```
+
+The comparison opens as a self-contained side-by-side HTML page, then the
+desktop process exits. An already-open desktop window does not consume or
+block later external diff calls.
+
 ---
 
 ## 中文说明
@@ -216,6 +227,15 @@ npm run build:sidecar && cd xlsx-diff-html-tauri && npm run dev
 # Windows
 npm run build:sidecar:win; cd xlsx-diff-html-tauri; npm run dev
 ```
+
+桌面可执行程序作为 external diff 工具调用时，只接受两个位置参数：
+
+```bash
+xlsx-diff-html "$LOCAL" "$REMOTE"
+```
+
+程序生成并打开自包含的双栏 HTML 后立即退出。已经打开的桌面窗口不会再吞掉后续的
+external diff 调用。
 
 ---
 

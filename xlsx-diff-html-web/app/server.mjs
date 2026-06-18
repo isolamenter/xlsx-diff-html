@@ -7,6 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { xlsxBufferToCsv, xlsxSheetToCsv, XLSX_READ_OPTIONS } from '../../lib/engine.mjs';
+import { parseDirectCompareArgs, runDirectCompare } from '../../lib/direct-compare.mjs';
 import { csvDiffToHtml, csvDiffToHtmlSideBySide } from '../../lib/daff.mjs';
 import { spawnGit, parseGitStatus, stripLongPathPrefix } from '../../lib/git.mjs';
 import * as XLSX from 'xlsx';
@@ -715,7 +716,23 @@ async function shutdown() {
   if (SESSION_TMP) await fsp.rm(SESSION_TMP, { recursive: true, force: true }).catch(() => {});
 }
 
-process.on('SIGINT', () => shutdown().finally(() => process.exit(0)));
-process.on('SIGTERM', () => shutdown().finally(() => process.exit(0)));
+async function runOneShotCompare() {
+  const parsed = parseDirectCompareArgs(process.argv.slice(2));
+  const result = await runDirectCompare({
+    ...parsed,
+    invocationCwd: process.env.XLSX_DIFF_INVOCATION_CWD || process.cwd(),
+  });
+  console.log(result.stdout);
+  if (parsed.autoOpen) openUrlInBrowser(result.htmlPath);
+}
 
-start().catch((err) => { console.error(err); process.exit(1); });
+if (process.env.XLSX_DIFF_HTML_ONESHOT === '1') {
+  runOneShotCompare().catch((err) => {
+    console.error(`Error: ${err.message}`);
+    process.exitCode = 1;
+  });
+} else {
+  process.on('SIGINT', () => shutdown().finally(() => process.exit(0)));
+  process.on('SIGTERM', () => shutdown().finally(() => process.exit(0)));
+  start().catch((err) => { console.error(err); process.exit(1); });
+}

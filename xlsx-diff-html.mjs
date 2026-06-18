@@ -1,9 +1,8 @@
 #!/usr/bin/env node
-import { runDiff, normalizeFilePath, collectChangedXlsx, xlsxBufferToCsv } from './lib/engine.mjs';
-import { csvDiffToHtmlSideBySide } from './lib/daff.mjs';
+import { runDiff, normalizeFilePath, collectChangedXlsx } from './lib/engine.mjs';
+import { runDirectCompare } from './lib/direct-compare.mjs';
 import { spawnGit } from './lib/git.mjs';
 import fsp from 'node:fs/promises';
-import os from 'node:os';
 import path from 'node:path';
 import { exec } from 'node:child_process';
 
@@ -128,43 +127,21 @@ const invocationCwd = process.cwd();
 
 // --compare mode: direct file-to-file diff, no git required
 if (compareMode) {
-  const localAbs = path.isAbsolute(localFile) ? localFile : path.join(invocationCwd, localFile);
-  const remoteAbs = path.isAbsolute(remoteFile) ? remoteFile : path.join(invocationCwd, remoteFile);
-
-  // Generate side-by-side HTML locally
-  let sbsHtmlPath;
-  if (outputPath) {
-    sbsHtmlPath = path.isAbsolute(outputPath) ? outputPath : path.join(invocationCwd, outputPath);
-  } else {
-    const stamp = String(Date.now());
-    sbsHtmlPath = path.join(os.tmpdir(), 'xlsx-diff-html', `compare_${stamp}.sbs.html`);
+  let result;
+  try {
+    result = await runDirectCompare({
+      localFile,
+      remoteFile,
+      options,
+      outputPath,
+      invocationCwd,
+    });
+  } catch (error) {
+    die(error.message);
   }
 
-  let oldBuffer, newBuffer;
-  try { oldBuffer = await fsp.readFile(localAbs); } catch { oldBuffer = Buffer.alloc(0); }
-  try { newBuffer = await fsp.readFile(remoteAbs); } catch { newBuffer = Buffer.alloc(0); }
-
-  let oldCsv, newCsv;
-  try { oldCsv = xlsxBufferToCsv(oldBuffer, options); } catch (e) {
-    die(`cannot parse LOCAL as xlsx (${localAbs}): ${e.message}`);
-  }
-  try { newCsv = xlsxBufferToCsv(newBuffer, options); } catch (e) {
-    die(`cannot parse REMOTE as xlsx (${remoteAbs}): ${e.message}`);
-  }
-
-  const noTableDiff = oldCsv === newCsv;
-  const sheetLabel = options.sheetMode === 'all' ? 'all' : String(options.sheet ?? 1);
-  const sbsHtml = csvDiffToHtmlSideBySide(oldCsv, newCsv, localFile, remoteFile, sheetLabel);
-  await fsp.mkdir(path.dirname(sbsHtmlPath), { recursive: true });
-  await fsp.writeFile(sbsHtmlPath, sbsHtml);
-  process.stdout.write([
-    `Comparing: ${localAbs}  vs  ${remoteAbs}`,
-    `Sheet: ${sheetLabel}`,
-    `HTML: ${sbsHtmlPath}`,
-    ...(noTableDiff ? ['Diff: no table diff'] : []),
-  ].join('\n') + '\n');
-
-  if (autoOpen) openBrowser(sbsHtmlPath);
+  process.stdout.write(result.stdout + '\n');
+  if (autoOpen) openBrowser(result.htmlPath);
   process.exit(0);
 }
 

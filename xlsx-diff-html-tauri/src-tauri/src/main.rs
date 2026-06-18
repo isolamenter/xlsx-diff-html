@@ -31,31 +31,49 @@ async fn pick_native_path(app: tauri::AppHandle, kind: String) -> Result<Option<
         .transpose()
 }
 
-/// Parse `--compare LOCAL REMOTE` or bare two-positional-arg form (`LOCAL REMOTE`).
-fn find_compare_files() -> Option<(String, String)> {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-
-    // --compare LOCAL REMOTE
-    if let Some(i) = args.iter().position(|a| a == "--compare") {
-        if i + 2 < args.len() {
-            return Some((args[i + 1].clone(), args[i + 2].clone()));
-        }
+fn as_compare_args(args: Vec<String>) -> Option<Vec<String>> {
+    if args.len() == 2 && args.iter().all(|arg| !arg.starts_with('-')) {
+        return Some(args);
     }
-
-    // Two positional (non-flag) args — what Git GUI clients pass as `$LOCAL $REMOTE`
-    let pos: Vec<&str> = args
-        .iter()
-        .filter(|a| !a.starts_with('-'))
-        .map(String::as_str)
-        .collect();
-    if pos.len() == 2 {
-        return Some((pos[0].to_string(), pos[1].to_string()));
-    }
-
     None
 }
 
+/// Return CLI-compatible arguments for external diff mode.
+fn find_compare_args() -> Option<Vec<String>> {
+    as_compare_args(std::env::args().skip(1).collect())
+}
+
+fn run_external_diff(args: Vec<String>) -> ! {
+    let executable = std::env::current_exe().expect("failed to locate application executable");
+    let sidecar = executable
+        .parent()
+        .expect("application executable has no parent directory")
+        .join(format!("server{}", std::env::consts::EXE_SUFFIX));
+    let invocation_cwd = std::env::current_dir()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned();
+
+    let status = std::process::Command::new(sidecar)
+        .args(args)
+        .env("XLSX_DIFF_HTML_ONESHOT", "1")
+        .env("XLSX_DIFF_INVOCATION_CWD", invocation_cwd)
+        .status();
+
+    match status {
+        Ok(status) => std::process::exit(status.code().unwrap_or(1)),
+        Err(error) => {
+            eprintln!("Error: failed to run external diff sidecar: {error}");
+            std::process::exit(1);
+        }
+    }
+}
+
 fn main() {
+    if let Some(args) = find_compare_args() {
+        run_external_diff(args);
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
@@ -81,13 +99,6 @@ fn main() {
                 .expect("sidecar 'server' not found — run: npm run build:sidecar")
                 .env("XLSX_DIFF_HTML_READY_FILE", ready_file.to_str().unwrap())
                 .env("XLSX_DIFF_HTML_ROOT", root.to_str().unwrap());
-
-            let cmd = match find_compare_files() {
-                Some((local, remote)) => cmd
-                    .env("XLSX_DIFF_LOCAL", &local)
-                    .env("XLSX_DIFF_REMOTE", &remote),
-                None => cmd,
-            };
 
             let cmd = match find_public_dir(&handle) {
                 Some(pd) => cmd.env("XLSX_PUBLIC_DIR", pd.to_string_lossy().as_ref()),
@@ -176,4 +187,26 @@ fn wait_for_ready_file_sync(path: &std::path::Path, timeout: Duration) -> Option
         std::thread::sleep(Duration::from_millis(100));
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::as_compare_args;
+
+    fn args(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| (*value).to_string()).collect()
+    }
+
+    #[test]
+    fn detects_bare_compare_mode() {
+        assert!(as_compare_args(args(&["old.xlsx", "new.xlsx"])).is_some());
+    }
+
+    #[test]
+    fn rejects_options_and_non_compare_invocations() {
+        assert!(as_compare_args(Vec::new()).is_none());
+        assert!(as_compare_args(args(&["--no-open"])).is_none());
+        assert!(as_compare_args(args(&["--compare", "old.xlsx", "new.xlsx"])).is_none());
+        assert!(as_compare_args(args(&["--no-open", "old.xlsx", "new.xlsx"])).is_none());
+    }
 }
