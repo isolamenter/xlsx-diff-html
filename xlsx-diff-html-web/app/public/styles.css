@@ -138,6 +138,24 @@ label {
   white-space: nowrap;
 }
 
+.topbar-options {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 16px;
+  margin-left: auto;
+}
+
+.topbar-date {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.topbar-date input {
+  width: 130px;
+}
+
 .topbar-actions {
   display: flex;
   align-items: center;
@@ -256,6 +274,10 @@ label {
   margin-top: 10px;
 }
 
+#branchRow {
+  grid-template-columns: 1fr 1fr auto;
+}
+
 .control-row.compact {
   grid-template-columns: auto 96px auto minmax(150px, 220px);
   align-items: center;
@@ -277,11 +299,13 @@ label {
 
 .split {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(260px, 360px);
+  grid-template-columns: 1fr;
 }
 
 .split > div + div {
-  border-left: 1px solid var(--line);
+  border-top: 1px solid var(--line);
+  margin-top: 14px;
+  padding-top: 14px;
 }
 
 .list {
@@ -418,15 +442,9 @@ label {
 
 @media (max-width: 900px) {
   .shell,
-  .split,
   .control-row,
   .control-row.compact {
     grid-template-columns: 1fr;
-  }
-
-  .split > div + div {
-    border-left: 0;
-    border-top: 1px solid var(--line);
   }
 
   .runtime {

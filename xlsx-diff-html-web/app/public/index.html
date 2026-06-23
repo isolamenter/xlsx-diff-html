@@ -15,6 +15,16 @@
           <button id="changeRoot" type="button" class="small" data-i18n="changeRoot">Change</button>
         </div>
       </div>
+      <div class="topbar-options">
+        <label class="inline">
+          <input id="ignoreEmpty" type="checkbox">
+          <span data-i18n="ignoreEmpty">Ignore empty rows</span>
+        </label>
+        <label class="topbar-date">
+          <span data-i18n="dateFormat">Date format</span>
+          <input id="dateFormat" type="text" value="yyyy-mm-dd" placeholder="yyyy-mm-dd">
+        </label>
+      </div>
       <div class="topbar-actions">
         <label class="language-select">
           <span data-i18n="language">Language</span>
@@ -55,28 +65,30 @@
               <select id="repoMode">
                 <option value="working" data-i18n="modeWorking">HEAD vs working tree</option>
                 <option value="staged" data-i18n="modeStaged">HEAD vs staged index</option>
+                <option value="branch" data-i18n="modeBranch">Branch vs branch</option>
               </select>
             </label>
             <button id="loadStatus" type="button" data-i18n="load">Load</button>
           </div>
-          <div class="control-row compact">
-            <label class="inline" style="display: none;">
-              <input id="allSheets" type="checkbox" checked>
-              <span data-i18n="allSheets">All sheets</span>
-            </label>
-            <label style="display: none;">
-              <span data-i18n="sheet">Sheet</span>
-              <input id="sheet" type="number" min="1" value="1">
-            </label>
-            <label class="inline">
-              <input id="ignoreEmpty" type="checkbox">
-              <span data-i18n="ignoreEmpty">Ignore empty rows</span>
+          <div id="branchRow" class="control-row" style="display: none;">
+            <label>
+              <span data-i18n="baseBranch">Base (old)</span>
+              <select id="baseBranch"></select>
             </label>
             <label>
-              <span data-i18n="dateFormat">Date format</span>
-              <input id="dateFormat" type="text" value="yyyy-mm-dd" placeholder="yyyy-mm-dd">
+              <span data-i18n="headBranch">Compare (new)</span>
+              <select id="headBranch"></select>
             </label>
+            <button id="swapBranches" type="button" data-i18n="swapBranches">Swap</button>
           </div>
+          <label class="inline" style="display: none;">
+            <input id="allSheets" type="checkbox" checked>
+            <span data-i18n="allSheets">All sheets</span>
+          </label>
+          <label style="display: none;">
+            <span data-i18n="sheet">Sheet</span>
+            <input id="sheet" type="number" min="1" value="1">
+          </label>
         </section>
 
         <section class="panel split">

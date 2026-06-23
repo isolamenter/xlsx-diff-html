@@ -19,6 +19,10 @@ const el = {
   tree: document.querySelector('#tree'),
   repoPath: document.querySelector('#repoPath'),
   repoMode: document.querySelector('#repoMode'),
+  branchRow: document.querySelector('#branchRow'),
+  baseBranch: document.querySelector('#baseBranch'),
+  headBranch: document.querySelector('#headBranch'),
+  swapBranches: document.querySelector('#swapBranches'),
   loadStatus: document.querySelector('#loadStatus'),
   allSheets: document.querySelector('#allSheets'),
   sheet: document.querySelector('#sheet'),
@@ -49,6 +53,11 @@ const i18n = {
     mode: 'Mode',
     modeWorking: 'HEAD vs working tree',
     modeStaged: 'HEAD vs staged index',
+    modeBranch: 'Branch vs branch',
+    baseBranch: 'Base (old)',
+    headBranch: 'Compare (new)',
+    swapBranches: 'Swap',
+    selectBranches: 'Select base and compare branches first.',
     load: 'Load',
     allSheets: 'All sheets',
     sheet: 'Sheet',
@@ -64,7 +73,7 @@ const i18n = {
     repoSelected: 'Repo selected',
     selectRepoFirst: 'Select a repo directory first.',
     loading: 'Loading...',
-    changedCount: (count, mode) => `${count} changed xlsx file${count === 1 ? '' : 's'} - ${mode}`,
+    changedCount: (count, modeLabel) => `${count} changed xlsx file${count === 1 ? '' : 's'} - ${modeLabel}`,
     noChangedFiles: 'No changed xlsx files.',
     diffButton: 'Diff',
     generatingDiff: 'Generating diff...',
@@ -93,6 +102,11 @@ const i18n = {
     mode: '模式',
     modeWorking: 'HEAD vs 工作区',
     modeStaged: 'HEAD vs 暂存区',
+    modeBranch: '分支对比分支',
+    baseBranch: '基准分支（旧）',
+    headBranch: '对比分支（新）',
+    swapBranches: '交换',
+    selectBranches: '请先选择基准分支和对比分支。',
     load: '加载',
     allSheets: '全部工作表',
     sheet: '工作表',
@@ -108,7 +122,7 @@ const i18n = {
     repoSelected: '已选择仓库',
     selectRepoFirst: '请先选择一个仓库目录。',
     loading: '加载中...',
-    changedCount: (count, mode) => `${count} 个变更 of xlsx 文件 - ${mode === 'staged' ? '暂存区' : '工作区'}`,
+    changedCount: (count, modeLabel) => `${count} 个变更的 xlsx 文件 - ${modeLabel}`,
     noChangedFiles: '没有变更的 xlsx 文件。',
     diffButton: '差异',
     generatingDiff: '正在生成差异...',
@@ -333,7 +347,48 @@ function useRepo(path) {
   state.repo = path;
   el.repoPath.value = path || '.';
   el.statusMeta.textContent = t('repoSelected');
-  loadStatus().catch(showError);
+  // Drop any branch list cached from a previously selected repo so branch mode
+  // re-fetches refs instead of querying the new repo with stale branch names.
+  state.refs = null;
+  el.baseBranch.textContent = '';
+  el.headBranch.textContent = '';
+  if (el.repoMode.value === 'branch') {
+    loadRefs().then(() => loadStatus()).catch(showError);
+  } else {
+    loadStatus().catch(showError);
+  }
+}
+
+function updateModeUI() {
+  el.branchRow.style.display = el.repoMode.value === 'branch' ? '' : 'none';
+}
+
+function populateBranchSelect(select, refs, selected) {
+  select.textContent = '';
+  for (const ref of refs) {
+    const option = document.createElement('option');
+    option.value = ref;
+    option.textContent = ref;
+    if (ref === selected) option.selected = true;
+    select.append(option);
+  }
+}
+
+function defaultBaseRef(refs, current) {
+  const preferred = refs.find((r) => (r === 'main' || r === 'master') && r !== current);
+  if (preferred) return preferred;
+  const other = refs.find((r) => r !== current);
+  return other || current || refs[0] || '';
+}
+
+async function loadRefs() {
+  if (!state.repo) return;
+  const data = await api(`/api/repo/refs?repo=${encodeQuery(state.repo)}`);
+  const refs = data.refs || [];
+  state.refs = refs;
+  const current = data.current || '';
+  populateBranchSelect(el.baseBranch, refs, defaultBaseRef(refs, current));
+  populateBranchSelect(el.headBranch, refs, current || refs[0] || '');
 }
 
 async function loadStatus() {
@@ -341,13 +396,25 @@ async function loadStatus() {
     setMessage(t('selectRepoFirst'), true);
     return;
   }
+  const mode = el.repoMode.value;
+  let query = `/api/repo/status?repo=${encodeQuery(state.repo)}&mode=${encodeQuery(mode)}`;
+  let modeLabel = mode === 'staged' ? t('modeStaged') : t('modeWorking');
+  if (mode === 'branch') {
+    const base = el.baseBranch.value;
+    const head = el.headBranch.value;
+    if (!base || !head) {
+      setMessage(t('selectBranches'), true);
+      return;
+    }
+    query += `&base=${encodeQuery(base)}&head=${encodeQuery(head)}`;
+    modeLabel = `${base} → ${head}`;
+  }
   setMessage('');
   el.changedFiles.className = 'list empty';
   el.changedFiles.textContent = t('loading');
-  const mode = el.repoMode.value;
-  const data = await api(`/api/repo/status?repo=${encodeQuery(state.repo)}&mode=${encodeQuery(mode)}`);
+  const data = await api(query);
   renderChangedFiles(data.files);
-  el.statusMeta.textContent = t('changedCount', data.files.length, mode);
+  el.statusMeta.textContent = t('changedCount', data.files.length, modeLabel);
 }
 
 function renderChangedFiles(files) {
@@ -371,7 +438,7 @@ function renderChangedFiles(files) {
     const button = document.createElement('button');
     button.type = 'button';
     button.textContent = t('diffButton');
-    button.addEventListener('click', () => runGitDiff(file.path).catch(showError));
+    button.addEventListener('click', () => runGitDiff(file).catch(showError));
     row.append(name, status, button);
     el.changedFiles.append(row);
   }
@@ -379,16 +446,29 @@ function renderChangedFiles(files) {
 
 async function runGitDiff(file) {
   setMessage(t('generatingDiff'));
+  const mode = el.repoMode.value;
+  const path = typeof file === 'string' ? file : file.path;
+  const oldPath = typeof file === 'string' ? path : (file.oldPath || path);
+  const payload = {
+    repo: state.repo,
+    file: path,
+    mode,
+    ...diffOptions(),
+  };
+  let label = path;
+  if (mode === 'branch') {
+    payload.base = el.baseBranch.value;
+    payload.head = el.headBranch.value;
+    payload.oldFile = oldPath;
+    label = oldPath !== path
+      ? `${payload.base} → ${payload.head} · ${oldPath} → ${path}`
+      : `${payload.base} → ${payload.head} · ${path}`;
+  }
   const result = await api('/api/diff/git', {
     method: 'POST',
-    body: JSON.stringify({
-      repo: state.repo,
-      file,
-      mode: el.repoMode.value,
-      ...diffOptions(),
-    }),
+    body: JSON.stringify(payload),
   });
-  showDiff(result, file);
+  showDiff(result, label);
 }
 
 function openUrl(url, event) {
@@ -515,7 +595,26 @@ el.upDir.addEventListener('click', () => openDir(el.upDir.dataset.path || '').ca
 el.useCurrentRepo.addEventListener('click', () => useRepo(state.currentPath));
 el.loadStatus.addEventListener('click', () => loadStatus().catch(showError));
 el.repoMode.addEventListener('change', () => {
-  if (state.repo) loadStatus().catch(showError);
+  updateModeUI();
+  if (el.repoMode.value === 'branch') {
+    if (!state.repo) return;
+    const needRefs = !state.refs || !state.refs.length;
+    (needRefs ? loadRefs() : Promise.resolve()).then(() => loadStatus()).catch(showError);
+  } else if (state.repo) {
+    loadStatus().catch(showError);
+  }
+});
+el.baseBranch.addEventListener('change', () => {
+  if (state.repo && el.repoMode.value === 'branch') loadStatus().catch(showError);
+});
+el.headBranch.addEventListener('change', () => {
+  if (state.repo && el.repoMode.value === 'branch') loadStatus().catch(showError);
+});
+el.swapBranches.addEventListener('click', () => {
+  const base = el.baseBranch.value;
+  el.baseBranch.value = el.headBranch.value;
+  el.headBranch.value = base;
+  if (state.repo && el.repoMode.value === 'branch') loadStatus().catch(showError);
 });
 el.language.addEventListener('change', () => {
   state.lang = el.language.value === 'zh' ? 'zh' : 'en';
@@ -530,6 +629,7 @@ el.pickLocalFileNew.addEventListener('click', () => pickLocalFile(el.localFileNe
 el.runLocalDiff.addEventListener('click', () => runLocalDiff());
 
 applyLanguage();
+updateModeUI();
 
 if (!state.token) {
   setMessage(t('missingToken'), true);

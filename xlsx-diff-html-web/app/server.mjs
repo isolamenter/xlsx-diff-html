@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { xlsxBufferToCsv, xlsxSheetToCsv, XLSX_READ_OPTIONS } from '../../lib/engine.mjs';
 import { parseDirectCompareArgs, runDirectCompare } from '../../lib/direct-compare.mjs';
 import { csvDiffToHtml, csvDiffToHtmlSideBySide } from '../../lib/daff.mjs';
-import { spawnGit, parseGitStatus, stripLongPathPrefix } from '../../lib/git.mjs';
+import { spawnGit, parseGitStatus, parseGitDiffNameStatus, stripLongPathPrefix } from '../../lib/git.mjs';
 import * as XLSX from 'xlsx';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -333,9 +333,86 @@ async function listDirectory(url) {
   };
 }
 
-async function repoStatus(url) {
-  const mode = url.searchParams.get('mode') === 'staged' ? 'staged' : 'working';
+function normalizeRepoMode(value) {
+  if (value === 'staged') return 'staged';
+  if (value === 'branch') return 'branch';
+  return 'working';
+}
+
+// Validate that a ref name is safe to embed in a git command and resolves to a
+// commit in the given repository. Returns the trimmed ref.
+async function validateRef(repoReal, value, label) {
+  if (typeof value !== 'string' || !value.trim()) {
+    throw httpError(400, `${label} ref is required`);
+  }
+  const ref = value.trim();
+  if (ref.length > 200 || ref.startsWith('-') || /[\0\n\r]/.test(ref)) {
+    throw httpError(400, `${label} ref is invalid`);
+  }
+  const verify = await runCommand('git', ['-C', repoReal, 'rev-parse', '--verify', '--quiet', `${ref}^{commit}`], {
+    cwd: ROOT_REAL,
+    env: toolEnv(),
+    timeoutMs: 15000,
+  });
+  if (verify.code !== 0) {
+    throw httpError(400, `${label} ref was not found: ${ref}`);
+  }
+  return ref;
+}
+
+async function repoRefs(url) {
   const repoReal = await validateRepoRoot(url.searchParams.get('repo') || '');
+  const result = await runCommand('git', [
+    'for-each-ref',
+    '--format=%(refname:short)%00%(symref)',
+    '--sort=-committerdate',
+    'refs/heads', 'refs/remotes', 'refs/tags',
+  ], { cwd: repoReal, env: toolEnv(), timeoutMs: 15000 });
+
+  if (result.code !== 0) {
+    throw commandHttpError(500, 'git for-each-ref failed', result);
+  }
+
+  const refs = result.stdout.toString('utf8')
+    .split('\n')
+    .map((line) => line.split('\0'))
+    .filter(([name, symref]) => name && name.trim() && !symref) // drop symbolic refs (e.g. origin/HEAD)
+    .map(([name]) => name.trim());
+
+  const headResult = await runCommand('git', ['symbolic-ref', '--short', '-q', 'HEAD'], {
+    cwd: repoReal,
+    env: toolEnv(),
+    timeoutMs: 15000,
+  });
+  const current = headResult.code === 0 ? headResult.stdout.toString('utf8').trim() : '';
+
+  return { repo: relFromRoot(repoReal), current, refs };
+}
+
+async function repoStatus(url) {
+  const mode = normalizeRepoMode(url.searchParams.get('mode'));
+  const repoReal = await validateRepoRoot(url.searchParams.get('repo') || '');
+
+  if (mode === 'branch') {
+    const base = await validateRef(repoReal, url.searchParams.get('base'), 'base');
+    const head = await validateRef(repoReal, url.searchParams.get('head'), 'head');
+    const result = await runCommand('git', ['diff', '--name-status', '-z', base, head, '--', '*.xlsx'], {
+      cwd: repoReal,
+      env: toolEnv(),
+      timeoutMs: 30000,
+    });
+    if (result.code !== 0) {
+      throw commandHttpError(500, 'git diff failed', result);
+    }
+    return {
+      repo: relFromRoot(repoReal),
+      mode,
+      base,
+      head,
+      files: parseGitDiffNameStatus(result.stdout),
+    };
+  }
+
   const result = await runCommand('git', ['status', '--porcelain=v1', '-z', '--untracked-files=all', '--', '*.xlsx'], {
     cwd: repoReal,
     env: toolEnv(),
@@ -385,6 +462,34 @@ function readWorkbook(buffer) {
   }
 }
 
+// Pair up the sheets of two workbooks for diffing. Sheets sharing a name are
+// matched by name; the remaining sheets are matched positionally (in workbook
+// order) so a renamed sheet still diffs against its counterpart instead of
+// showing up as one fully-deleted sheet plus one fully-added "new" sheet.
+// Returns [{ oldName, newName }] where either side may be null (added/deleted).
+function pairSheets(oldNames, newNames) {
+  const oldSet = new Set(oldNames);
+  const newSet = new Set(newNames);
+  const remainingOld = oldNames.filter((n) => !newSet.has(n));
+  const pairs = [];
+  let ri = 0; // index into remainingOld for positional matching
+
+  // Walk the new workbook's sheets in order to keep the output natural.
+  for (const name of newNames) {
+    if (oldSet.has(name)) {
+      pairs.push({ oldName: name, newName: name });
+    } else {
+      pairs.push({ oldName: ri < remainingOld.length ? remainingOld[ri] : null, newName: name });
+      ri += 1;
+    }
+  }
+  // Old sheets with no positional counterpart are deletions.
+  for (let j = ri; j < remainingOld.length; j += 1) {
+    pairs.push({ oldName: remainingOld[j], newName: null });
+  }
+  return pairs;
+}
+
 // Diff every sheet across two xlsx buffers, writing per-sheet HTML views to
 // SESSION_TMP and returning { sheets: [{ name, hasDiff, htmlUrl, sbsUrl }] }.
 async function buildSheetDiffs(oldBuffer, newBuffer, options, beforeLabel, afterLabel) {
@@ -393,17 +498,21 @@ async function buildSheetDiffs(oldBuffer, newBuffer, options, beforeLabel, after
 
   const oldSheets = oldWb ? oldWb.SheetNames : [];
   const newSheets = newWb ? newWb.SheetNames : [];
-  const allSheetNames = Array.from(new Set([...oldSheets, ...newSheets]));
+  const pairs = pairSheets(oldSheets, newSheets);
 
   const sheets = [];
-  for (const sheetName of allSheetNames) {
+  for (const { oldName, newName } of pairs) {
+    const displayName = oldName && newName && oldName !== newName
+      ? `${oldName} → ${newName}`
+      : (newName || oldName);
+
     let oldCsv = '';
     let newCsv = '';
-    if (oldWb) {
-      try { oldCsv = xlsxSheetToCsv(oldWb, sheetName, options); } catch { /* empty CSV fallback */ }
+    if (oldWb && oldName) {
+      try { oldCsv = xlsxSheetToCsv(oldWb, oldName, options); } catch { /* empty CSV fallback */ }
     }
-    if (newWb) {
-      try { newCsv = xlsxSheetToCsv(newWb, sheetName, options); } catch { /* empty CSV fallback */ }
+    if (newWb && newName) {
+      try { newCsv = xlsxSheetToCsv(newWb, newName, options); } catch { /* empty CSV fallback */ }
     }
 
     const hasDiff = oldCsv !== newCsv;
@@ -415,8 +524,8 @@ async function buildSheetDiffs(oldBuffer, newBuffer, options, beforeLabel, after
       const htmlPath = path.join(SESSION_TMP, `${prefix}.html`);
       const sbsHtmlPath = path.join(SESSION_TMP, `${prefix}.sbs.html`);
 
-      const htmlContent = csvDiffToHtml(oldCsv, newCsv, beforeLabel, afterLabel, sheetName);
-      const sbsHtmlContent = csvDiffToHtmlSideBySide(oldCsv, newCsv, beforeLabel, afterLabel, sheetName);
+      const htmlContent = csvDiffToHtml(oldCsv, newCsv, beforeLabel, afterLabel, displayName);
+      const sbsHtmlContent = csvDiffToHtmlSideBySide(oldCsv, newCsv, beforeLabel, afterLabel, displayName);
 
       await fsp.mkdir(path.dirname(htmlPath), { recursive: true });
       await fsp.writeFile(htmlPath, htmlContent);
@@ -427,28 +536,64 @@ async function buildSheetDiffs(oldBuffer, newBuffer, options, beforeLabel, after
       sbsUrl = `/diff/${id}/sbs?token=${TOKEN}`;
     }
 
-    sheets.push({ name: sheetName, hasDiff, htmlUrl, sbsUrl });
+    sheets.push({ name: displayName, hasDiff, htmlUrl, sbsUrl });
   }
 
   return { sheets };
 }
 
+// A non-zero `git show <ref>:<path>` simply means the blob is absent from that
+// ref (an added or deleted file) — a legitimate empty side, not a failure. The
+// last two patterns cover an unborn HEAD (a repo with no commits yet), where
+// `git show HEAD:<path>` cannot resolve HEAD — there the empty side is correct.
+function isMissingBlobError(result) {
+  const stderr = result.stderr.toString('utf8');
+  return /does not exist in|exists on disk, but not in|invalid object name|unknown revision/.test(stderr);
+}
+
+// Read an xlsx blob via `git show <spec>` (e.g. `main:file`, `HEAD:file`,
+// `:file` for the index). Returns an empty buffer when the blob is genuinely
+// absent from the ref, but surfaces any other git failure instead of silently
+// degrading to an "everything is new" diff.
+async function gitShowBuffer(spec, repoReal, label) {
+  const result = await spawnGit(['show', spec], repoReal);
+  if (result.code === 0) {
+    console.error(`[diff/git] ${label} ${spec} -> ${result.stdout.length} bytes`);
+    return result.stdout;
+  }
+  if (isMissingBlobError(result)) {
+    console.error(`[diff/git] ${label} ${spec} absent in ref (empty side)`);
+    return Buffer.alloc(0);
+  }
+  const stderr = result.stderr.toString('utf8').trim();
+  console.error(`[diff/git] ${label} git show ${spec} failed (code ${result.code}): ${stderr}`);
+  throw commandHttpError(500, `git show failed for ${spec}`, result);
+}
+
 async function diffGit(req) {
   const body = await readJson(req);
-  const mode = body.mode === 'staged' ? 'staged' : 'working';
+  const mode = normalizeRepoMode(body.mode);
   const repoReal = await validateRepoRoot(body.repo || '');
   const file = await validateRepoFile(repoReal, body.file || '');
   const options = readDiffOptions(body);
 
+  if (mode === 'branch') {
+    const base = await validateRef(repoReal, body.base, 'base');
+    const head = await validateRef(repoReal, body.head, 'head');
+    // For renames/copies the blob lived under a different path in `base`.
+    const oldFile = body.oldFile ? await validateRepoFile(repoReal, body.oldFile) : file;
+    const oldBuffer = await gitShowBuffer(`${base}:${oldFile}`, repoReal, 'base');
+    const newBuffer = await gitShowBuffer(`${head}:${file}`, repoReal, 'head');
+    return buildSheetDiffs(oldBuffer, newBuffer, options, `${base}:${oldFile}`, `${head}:${file}`);
+  }
+
   // Get old xlsx from HEAD
-  const headResult = await spawnGit(['show', `HEAD:${file}`], repoReal);
-  const oldBuffer = headResult.code === 0 ? headResult.stdout : Buffer.alloc(0);
+  const oldBuffer = await gitShowBuffer(`HEAD:${file}`, repoReal, 'HEAD');
 
   // Get new xlsx from working tree or staged index
   let newBuffer;
   if (mode === 'staged') {
-    const indexResult = await spawnGit(['show', `:${file}`], repoReal);
-    newBuffer = indexResult.code === 0 ? indexResult.stdout : Buffer.alloc(0);
+    newBuffer = await gitShowBuffer(`:${file}`, repoReal, 'index');
   } else {
     try {
       newBuffer = await fsp.readFile(path.join(repoReal, file));
@@ -603,6 +748,9 @@ async function route(req, res) {
     }
     if (req.method === 'GET' && url.pathname === '/api/list') {
       return json(res, 200, await listDirectory(url));
+    }
+    if (req.method === 'GET' && url.pathname === '/api/repo/refs') {
+      return json(res, 200, await repoRefs(url));
     }
     if (req.method === 'GET' && url.pathname === '/api/repo/status') {
       return json(res, 200, await repoStatus(url));
